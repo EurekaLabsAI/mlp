@@ -1,6 +1,6 @@
 """
 Implements a simple n-gram language model in MLX.
-Acts as the correctness reference for all the other versions.
+MLX port of `mlp_pytorch.py`.
 """
 import math
 import mlx.core as mx
@@ -31,9 +31,8 @@ class MLP(nn.Module):
             nn.Linear(hidden_size, vocab_size)
         )
 
-    def __call__(self, idx, targets=None):
+    def __call__(self, idx ):
         # idx are the input tokens, (B, T) array of integers
-        # targets are the target tokens, (B, ) array of integers
         B, T = idx.shape
         # encode all the tokens using the embedding table
         emb = self.wte(idx)  # (B, T, embedding_size)
@@ -41,11 +40,15 @@ class MLP(nn.Module):
         emb = emb.reshape(B, -1)  # (B, T * embedding_size)
         # forward through the MLP
         logits = self.mlp(emb)
-        # if we are given desired targets, also calculate the loss
-        loss = None
-        if targets is not None:
-            loss = nn.losses.cross_entropy(logits, targets)
-        return logits, loss
+        
+        return logits
+
+# -----------------------------------------------------------------------------
+# # loss function
+# inputs are the input tokens, (B, T) array of integers
+# targets are the target tokens, (B, ) array of integers
+def loss_fn(model, inputs, targets):
+    return nn.losses.cross_entropy(model(inputs), targets, reduction="mean")
 
 # -----------------------------------------------------------------------------
 # simple DataLoader that iterates over all the n-grams
@@ -81,11 +84,8 @@ def eval_split(model, tokens, max_batches=None):
     data_iter = dataloader(tokens, context_length, batch_size)
     for _ in range(num_batches):
         inputs, targets = next(data_iter)
-        print(f"Eval, model is type: {type(model)}")
-        logits, loss = model(inputs, targets)
-        total_loss += loss
-    # maybe loss should be scaled with the batch size?
-    # probably not
+        loss = loss_fn(model, inputs, targets)
+        total_loss += loss / num_batches
     mean_loss = mx.mean(total_loss).item()
     return mean_loss
 
@@ -116,28 +116,16 @@ model = MLP(vocab_size, context_length, embedding_size, hidden_size)
 
 # create the optimizer
 learning_rate = 1e-3
-# Adam optimizer in MLX doesn't have weight decay.
-# Besides, AdamW should be better then Adam.
+
+# Adam optimizer in MLX doesn't have weight decay, so using AdamW
 optimizer = optim.AdamW(learning_rate=learning_rate, weight_decay=1e-4)
+loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
 
 # training loop
 batch_size = 64
 num_steps = 50000
 print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
 train_data_iter = dataloader(train_tokens, context_length, batch_size)
-
-# MLX doesn't allow passing functions to @mx.compile
-# so we have to define the loss function outside
-def loss_fn(model, inputs, targets):
-    print(f"Loss, model is type: {type(model)}")
-    logits, loss = model(inputs, targets)
-    return loss
-
-@mx.compile
-def train_step(model, inputs, targets):
-    print(f"Train, model is type: {type(model)}")
-    loss, grads = mx.value_and_grad(loss_fn)(model, inputs, targets)
-    return loss, grads
 
 for step in range(num_steps):
     # cosine learning rate schedule, from max lr to 0
@@ -153,13 +141,10 @@ for step in range(num_steps):
     inputs, targets = next(train_data_iter)
     
     # perform a training step
-    print(f"step in train loop: Model is type: {type(model)}")
-    loss, grads = train_step(model, inputs, targets)
+    loss, grads = loss_and_grad_fn(model, inputs, targets)
     
     # update model parameters
-    print(f"Before optimizer update, model is type: {type(model)}")
     optimizer.update(model, grads)
 
-    print(f"After optimizer update, model is type: {type(model)}")
+    # make sure the changes are applied
     mx.eval(model.parameters(), optimizer.state)
-    print(f"After eval, model is type: {type(model)}")
