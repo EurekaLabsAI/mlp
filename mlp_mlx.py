@@ -92,9 +92,6 @@ def eval_split(model, tokens, max_batches=None):
 # -----------------------------------------------------------------------------
 # let's train!
 
-random = RNG(1337)
-# TODO: actually use this rng for the model initialization
-
 # "train" the Tokenizer, so we're able to map between characters and tokens
 train_text = open('data/train.txt', 'r').read()
 assert all(c == '\n' or ('a' <= c <= 'z') for c in train_text)
@@ -112,6 +109,10 @@ train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
 embedding_size = 24
 hidden_size = 512
+
+# Initialize the model with a random seed that's the same
+# random = RNG(1337)
+mx.random.seed(1337) 
 model = MLP(vocab_size, context_length, embedding_size, hidden_size)
 
 # create the optimizer
