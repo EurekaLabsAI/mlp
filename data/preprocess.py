@@ -14,7 +14,8 @@ python preprocess.py
 import random
 
 # read in all the names (32,032 names in total)
-names = open("names.txt", 'r').readlines()
+with open("names.txt", 'r') as file:
+    names = file.readlines()
 
 # get a permutation
 random.seed(42) # fix seed for reproducibility

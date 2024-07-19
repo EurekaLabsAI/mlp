@@ -3,6 +3,7 @@ Implements a simple n-gram language model in PyTorch.
 Acts as the correctness reference for all the other versions.
 """
 import math
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -88,13 +89,22 @@ def eval_split(model, tokens, max_batches=None):
     return mean_loss
 
 # -----------------------------------------------------------------------------
+# simple function that tokenizes all characters in a file
+
+def tokenize_file(filename, char_to_token_mapping):
+    with open(filename, 'r') as file:
+        return [char_to_token_mapping[c] for c in file.read()]
+
+# -----------------------------------------------------------------------------
 # let's train!
 
 random = RNG(1337)
 # TODO: actually use this rng for the model initialization
 
 # "train" the Tokenizer, so we're able to map between characters and tokens
-train_text = open('data/train.txt', 'r').read()
+with open('data/train.txt', 'r') as file:
+    train_text = open('data/train.txt', 'r').read()
+
 assert all(c == '\n' or ('a' <= c <= 'z') for c in train_text)
 uchars = sorted(list(set(train_text))) # unique characters we see in the input
 vocab_size = len(uchars)
@@ -102,9 +112,9 @@ char_to_token = {c: i for i, c in enumerate(uchars)}
 token_to_char = {i: c for i, c in enumerate(uchars)}
 EOT_TOKEN = char_to_token['\n'] # designate \n as the delimiting <|endoftext|> token
 # pre-tokenize all the splits one time up here
-test_tokens = [char_to_token[c] for c in open('data/test.txt', 'r').read()]
-val_tokens = [char_to_token[c] for c in open('data/val.txt', 'r').read()]
-train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
+test_tokens = tokenize_file('data/test.txt', char_to_token)
+val_tokens = tokenize_file('data/val.txt', char_to_token)
+train_tokens = tokenize_file('data/train.txt', char_to_token)
 
 # create the model
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
