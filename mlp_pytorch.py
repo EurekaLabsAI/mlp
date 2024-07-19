@@ -1,3 +1,7 @@
+"""
+Implements a simple n-gram language model in PyTorch.
+Acts as the correctness reference for all the other versions.
+"""
 import math
 import torch
 import torch.nn as nn
