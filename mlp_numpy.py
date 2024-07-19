@@ -131,17 +131,18 @@ class AdamW:
         self.t = 0
         self.m = {k: np.zeros_like(v) for k, v in params.items()}
         self.v = {k: np.zeros_like(v) for k, v in params.items()}
+        self.params = params
 
-    def step(self, params, grads):
+    def step(self, grads):
         self.t += 1
-        for k in params.keys():
+        for k in self.params.keys():
             self.m[k] = self.beta1 * self.m[k] + (1 - self.beta1) * grads[k]
             self.v[k] = self.beta2 * self.v[k] + (1 - self.beta2) * grads[k] ** 2
             m_hat = self.m[k] / (1 - self.beta1 ** self.t)
             v_hat = self.v[k] / (1 - self.beta2 ** self.t)
-            params[k] -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
+            self.params[k] -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
             if self.weight_decay > 0:
-                params[k] -= lr * self.weight_decay * params[k]
+                self.params[k] -= lr * self.weight_decay * self.params[k]
 
 # -----------------------------------------------------------------------------
 # simple DataLoader that iterates over all the n-grams
@@ -229,5 +230,5 @@ for step in range(num_steps):
     # backpropagate and update the weights
     grads = model.backward()
     # step the optimizer
-    optimizer.step(model.parameters(), grads)
+    optimizer.step(grads)
 
