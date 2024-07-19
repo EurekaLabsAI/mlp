@@ -1,6 +1,6 @@
 # mlp
 
-This is a very exciting module because we tie a lot of things things together and train a Multi-layer Perceptron (MLP) to be an n-gram Language Model, following the paper [A Neural Probabilistic Language Model](https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf) from Bengio et al. 2003.
+This is a very exciting module because we tie a lot of things together and train a Multi-layer Perceptron (MLP) to be an n-gram Language Model, following the paper [A Neural Probabilistic Language Model](https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf) from Bengio et al. 2003.
 
 We have multiple parallel implementations that all get to the exact same results but in very different ways:
 
