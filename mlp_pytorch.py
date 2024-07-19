@@ -1,7 +1,3 @@
-"""
-Implements a simple n-gram language model in PyTorch.
-Acts as the correctness reference for all the other versions.
-"""
 import math
 import torch
 import torch.nn as nn
@@ -100,24 +96,24 @@ uchars = sorted(list(set(train_text))) # unique characters we see in the input
 vocab_size = len(uchars)
 char_to_token = {c: i for i, c in enumerate(uchars)}
 token_to_char = {i: c for i, c in enumerate(uchars)}
-EOT_TOKEN = char_to_token['\n'] # designate \n as the delimiting <|endoftext|> token
+EOT_TOKEN = char_to_token['\n'] # designate \n as the delimiting  token
 # pre-tokenize all the splits one time up here
 test_tokens = [char_to_token[c] for c in open('data/test.txt', 'r').read()]
 val_tokens = [char_to_token[c] for c in open('data/val.txt', 'r').read()]
 train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 
 # create the model
-context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
-embedding_size = 24
-hidden_size = 512
+context_length = 5 # if 5 tokens predict the 6th, this is a 6-gram model
+embedding_size = 53
+hidden_size = 586
 model = MLP(vocab_size, context_length, embedding_size, hidden_size)
 
 # create the optimizer
-learning_rate = 1e-3
+learning_rate = 0.0007563988729866165
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
 # training loop
-batch_size = 64
+batch_size = 128
 num_steps = 50000
 print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
 train_data_iter = dataloader(train_tokens, context_length, batch_size)
