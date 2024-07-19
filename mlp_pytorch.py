@@ -82,7 +82,8 @@ def eval_split(model, tokens, max_batches=None):
     data_iter = dataloader(tokens, context_length, batch_size)
     for _ in range(num_batches):
         inputs, targets = next(data_iter)
-        logits, loss = model(inputs, targets)
+        with torch.inference_mode():
+            logits, loss = model(inputs, targets)
         total_loss += loss.item()
     mean_loss = total_loss / num_batches
     return mean_loss
