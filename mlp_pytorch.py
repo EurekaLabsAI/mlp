@@ -57,9 +57,9 @@ class MLP(nn.Module):
         with open(filename, "wb") as file:
             file.write(header.numpy().tobytes()) # header
             write_fun(params["wte.weight"], file) # (V, C)
-            write_fun(params["mlp.0.weight"], file) # (T * C, H)
+            write_fun(params["mlp.0.weight"], file) # (H, T * C)
             write_fun(params["mlp.0.bias"], file) # (H, )
-            write_fun(params["mlp.2.weight"], file) # (H, V)
+            write_fun(params["mlp.2.weight"], file) # (V, H)
             write_fun(params["mlp.2.bias"], file) # (V, )
         print(f"wrote {filename}")
 
