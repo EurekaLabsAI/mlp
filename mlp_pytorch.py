@@ -26,8 +26,7 @@ class MLP(nn.Module):
         self.wte = nn.Embedding(vocab_size, embedding_size) # token embedding table
         self.mlp = nn.Sequential(
             nn.Linear(context_length * embedding_size, hidden_size),
-            nn.Tanh(),
-            nn.GELU(),
+            nn.ReLU(),
             nn.Linear(hidden_size, vocab_size)
         )
 
@@ -91,6 +90,7 @@ def eval_split(model, tokens, max_batches=None):
 # let's train!
 
 random = RNG(1337)
+torch.manual_seed(1337)
 # TODO: actually use this rng for the model initialization
 
 # "train" the Tokenizer, so we're able to map between characters and tokens

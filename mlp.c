@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <assert.h>
 #include <string.h>
 
 // -----------------------------------------------------------------------------
@@ -367,7 +366,7 @@ void crossentropy_softmax_backward(float* grad_logits, float* act_probs, int* ta
         for (int i = 0; i < V; i++) {
             float p = act_probs[b*V + i];
             float indicator = i == targets[b] ? 1.0f : 0.0f;
-            grad_logits[b*V + i] += (p - indicator) * (1 / B);
+            grad_logits[b*V + i] += (p - indicator) * (1.f / B);
         }
     }
 }
@@ -380,6 +379,8 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
     for (int b = 0; b < B; b++) {
         for (int i = 0; i < C; i++) {
             for (int o = 0; o < OC; o++) {
+                // dinp = dout @ weight^T
+                // (B,C) = (B,OC) @ (OC,C)
                 dinp[b*C + i] += dout[b*OC + o] * weight[i*OC + o];
             }
         }
@@ -388,6 +389,8 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
     for (int i = 0; i < C; i++) {
         for (int o = 0; o < OC; o++) {
             for (int b = 0; b < B; b++) {
+                // dweight = inp^T @ dout
+                // (C,OC) = (C,B) @ (B,OC)
                 dweight[i*OC + o] += inp[b*C + i] * dout[b*OC + o];
             }
         }
@@ -506,21 +509,20 @@ void adam_free(AdamW *optimizer) {
 // -----------------------------------------------------------------------------
 // simple DataLoader that iterates over all the n-grams
 
-void dataloader(MLP* model, int *tokens, int context_length, int batch_size, int token_cnt) {
+void dataloader(MLP* model, int *tokens, int context_length, int batch_size, int token_cnt, int *pos) {
     if (model->acts_memory == NULL) {  // lazy initialization the first time we call dataloader
         model->inputs = (int*)mallocCheck(batch_size * model->config.context_length * sizeof(int));
         model->targets = (int*)mallocCheck(batch_size * sizeof(int));
     }
 
-    static int pos = 0;  // static variable persists between calls i.e. only initialized once
     for (int i = 0; i < batch_size; i++) {
         for (int j = 0; j < context_length; j++) {
-            model->inputs[i*context_length + j] = tokens[pos + j];
+            model->inputs[i*context_length + j] = tokens[*pos + j];
         }
-        model->targets[i] = tokens[pos + context_length];
-        pos = pos + 1;
-        if (pos + context_length >= token_cnt) {
-            pos = 0;
+        model->targets[i] = tokens[*pos + context_length];
+        *pos += 1;
+        if (*pos + context_length >= token_cnt) {
+            *pos = 0;
         }
     }
 }
@@ -532,8 +534,9 @@ float eval_split(MLP *model, int *tokens, int token_cnt, int max_batches, int ba
     float total_loss = 0;
     int num_batches = token_cnt / batch_size;
     num_batches = max_batches ? (num_batches < max_batches ? num_batches : max_batches) : num_batches;
+    int pos = 0;
     for (int i = 0; i < num_batches; i++) {
-        dataloader(model, tokens, model->config.context_length, batch_size, token_cnt);
+        dataloader(model, tokens, model->config.context_length, batch_size, token_cnt, &pos);
         float loss = forward(model);
         total_loss += loss;
     }
@@ -608,6 +611,7 @@ int main() {
     int num_steps = 50000;
     model.config.batch_size = batch_size;
     printf("num_steps %d, num_epochs %.2f\n", num_steps, num_steps * batch_size / (float)train_token_count);
+    int pos = 0;
     for (int step = 0; step < num_steps; step++) {
         // cosine learning rate schedule, from max lr to 0
         float lr = learning_rate * 0.5 * (1 + cosf(M_PI * step / num_steps));
@@ -620,7 +624,7 @@ int main() {
         }
 
         // get the next batch of training data
-        dataloader(&model, train_tokens, model.config.context_length, batch_size, train_token_count);
+        dataloader(&model, train_tokens, model.config.context_length, batch_size, train_token_count, &pos);
         // forward through the model
         float loss = forward(&model);
         // zero out the gradients
