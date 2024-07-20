@@ -70,6 +70,40 @@ extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, in
 // -----------------------------------------------------------------------------
 // MLP model
 
+// TODO: see whether shapes are correct
+#define NUM_PARAMETER_TENSORS 5
+typedef struct {
+    float *wte;  // (V, E)
+    float *fc1_weights;  // (T*E, H)
+    float *fc1_bias;  // (H,)
+    float *fc2_weights;  // (H, V)
+    float *fc2_bias;  // (V,)
+} ParameterTensors;
+
+void fill_in_parameter_sizes(size_t* param_sizes, int vocab_size, int context_length, int embedding_size, int hidden_size) {
+    param_sizes[0] = vocab_size * embedding_size;
+    param_sizes[1] = hidden_size * embedding_size * context_length;
+    param_sizes[2] = hidden_size;
+    param_sizes[3] = vocab_size * hidden_size;
+    param_sizes[4] = vocab_size;
+}
+
+// allocate memory for the parameters and point the individual tensors to the right places
+float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes, size_t num_parameters) {
+    // malloc all parameters all at once
+    float* params_memory = (float*)mallocCheck(num_parameters * sizeof(float));
+    // assign all the tensors
+    float** ptrs[] = {
+        &params->wte, &params->fc1_weights, &params->fc1_bias, &params->fc2_weights, &params->fc2_bias
+    };
+    float* params_memory_iterator = params_memory;
+    for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+        *(ptrs[i]) = params_memory_iterator;
+        params_memory_iterator += param_sizes[i];
+    }
+    return params_memory;
+}
+
 // Define the structure for the MLP
 typedef struct {
     // config
@@ -80,11 +114,9 @@ typedef struct {
     int batch_size;
     // model parameters
     // TODO(gordicaleksa): in the end prefix this with "w_" to denote weights
-    float *wte;
-    float *fc1_weights;
-    float *fc1_bias;
-    float *fc2_weights;
-    float *fc2_bias;
+    ParameterTensors params;
+    size_t param_sizes[NUM_PARAMETER_TENSORS];
+    float *params_memory;
     size_t num_parameters;
     // activations
     float *act_emb;
@@ -95,6 +127,7 @@ typedef struct {
     int* inputs; // the input tokens for the current forward pass
     int* targets; // the target tokens for the current forward pass
     // backward pass
+    float *grads_memory;
     float* grad_logits;
     float* grad_fc2_weights;
     float* grad_fc2_bias;
@@ -105,12 +138,6 @@ typedef struct {
     float* grad_emb;
     float* grad_wte;
 } MLP;
-
-float* read_parameter_array(FILE *file, int size) {
-    float *array = (float*)mallocCheck(size * sizeof(float));
-    freadCheck(array, sizeof(float), size, file);
-    return array;
-}
 
 MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
     // read in model from a checkpoint file
@@ -130,30 +157,26 @@ MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
     printf("embedding_size: %d\n", model->embedding_size);
     printf("hidden_size: %d\n", model->hidden_size);
 
-    int wte_size = model->vocab_size * model->embedding_size;
-    int fc1_weights_size = model->hidden_size * model->embedding_size * model->context_length;
-    int fc1_bias_size = model->hidden_size;
-    int fc2_weights_size = model->vocab_size * model->hidden_size;
-    int fc2_bias_size = model->vocab_size;
-    size_t num_parameters = wte_size + fc1_weights_size + fc1_bias_size + fc2_weights_size + fc2_bias_size;
+    // allocate space for all the parameters and read them in
+    fill_in_parameter_sizes(model->param_sizes, model->vocab_size, model->context_length, model->embedding_size, model->hidden_size);
+
+    // count the number of parameters
+    size_t num_parameters = 0;
+    for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+        num_parameters += model->param_sizes[i];
+    }
     printf("num_parameters: %zu\n", num_parameters);
     model->num_parameters = num_parameters;
 
-    model->wte = read_parameter_array(model_file, wte_size);
-    model->fc1_weights = read_parameter_array(model_file, fc1_weights_size);
-    model->fc1_bias = read_parameter_array(model_file, fc1_bias_size);
-    model->fc2_weights = read_parameter_array(model_file, fc2_weights_size);
-    model->fc2_bias = read_parameter_array(model_file, fc2_bias_size);
+    // read in all the parameters from file
+    model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes, num_parameters);
+    freadCheck(model->params_memory, sizeof(float), num_parameters, model_file);
 
     fcloseCheck(model_file);
 }
 
 void mlp_free(MLP *model) {
-    free(model->wte);
-    free(model->fc1_weights);
-    free(model->fc1_bias);
-    free(model->fc2_weights);
-    free(model->fc2_bias);
+    free(model->params_memory);
 }
 
 // -----------------------------------------------------------------------------
@@ -166,7 +189,6 @@ void encoder_forward(float *act_emb, int *inputs, float *wte, int B, int T, int 
             memcpy(&act_emb[(i*T + j)*E], &wte[token*E], E * sizeof(float));
         }
     }
-
 }
 
 void matmul_forward(float *c, float *a, float *b, float *bias, int m, int n, int k) {
@@ -222,7 +244,7 @@ float cross_entropy(float *probs, int *targets, int vocab_size, int batch_size) 
 float forward(MLP *model) {
 
     // ensure the model was initialized or error out
-    if (model->wte == NULL) {
+    if (model->params_memory == NULL) {
         printf("Error: model was not initialized properly.\n");
         exit(1);
     }
@@ -241,16 +263,18 @@ float forward(MLP *model) {
         model->act_probs = (float*)mallocCheck(B * V * sizeof(float));
     }
 
+    ParameterTensors params = model->params; // for brevity
+
     // encode all the tokens using the embedding table
     // inputs are the input tokens, (B, T) array of integers
-    encoder_forward(model->act_emb, model->inputs, model->wte, B, T, E);
+    encoder_forward(model->act_emb, model->inputs, params.wte, B, T, E);
 
     // forward through the first linear layer
-    matmul_forward(model->act_h, model->act_emb, model->fc1_weights, model->fc1_bias, B, T * E, H);
+    matmul_forward(model->act_h, model->act_emb, params.fc1_weights, params.fc1_bias, B, T * E, H);
     relu_forward(model->act_h, B * H);
 
     // forward through the second linear layer
-    matmul_forward(model->act_logits, model->act_h, model->fc2_weights, model->fc2_bias, B, H, V);  // (B, H) * (H, V) = (B, V)
+    matmul_forward(model->act_logits, model->act_h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) * (H, V) = (B, V)
     softmax(model->act_probs, model->act_logits, V, B);
 
     float loss = cross_entropy(model->act_probs, model->targets, V, B);
@@ -345,18 +369,20 @@ void backward(MLP *model) {
         model->grad_wte = (float*)callocCheck(V * E, sizeof(float));
     }
 
+    ParameterTensors params = model->params; // for brevity
+
     crossentropy_softmax_backward(model->grad_logits, model->act_probs, model->targets, B, V);
 
     // backprop through the second linear layer
     matmul_backward(model->grad_h, model->grad_fc2_weights, model->grad_fc2_bias,
-                    model->grad_logits, model->act_h, model->fc2_weights, B, H, V);
+                    model->grad_logits, model->act_h, params.fc2_weights, B, H, V);
 
     // backprop through relu
     relu_backward(model->grad_fc1, model->grad_h, model->act_h, B * H);
 
     // backprop through the first linear layer
     matmul_backward(model->grad_emb, model->grad_fc1_weights, model->grad_fc1_bias,
-                    model->grad_fc1, model->act_emb, model->fc1_weights, B, T * E, H);
+                    model->grad_fc1, model->act_emb, params.fc1_weights, B, T * E, H);
 
     // backprop through the embedding layer
     encoder_backward(model->grad_wte, model->grad_emb, model->inputs, B, T, E);
@@ -391,7 +417,6 @@ AdamW* adamw_init(AdamW* optimizer, MLP *model, float lr, float beta1, float bet
 
 void adamw_step(AdamW *optimizer, MLP* model) {
     optimizer->t += 1;
-    float* grads = model->grad_logits;  // TODO: check whether this will work
     for (int i = 0; i < model->num_parameters; i++) {
         optimizer->m[i] = optimizer->beta1 * optimizer->m[i] + (1 - optimizer->beta1) * grads[i];
         optimizer->v[i] = optimizer->beta2 * optimizer->v[i] + (1 - optimizer->beta2) * grads[i] * grads[i];
