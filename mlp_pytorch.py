@@ -94,60 +94,60 @@ def eval_split(model, tokens, max_batches=None):
     mean_loss = total_loss / num_batches
     return mean_loss
 
-if __name__ == "__main__":
-    # -----------------------------------------------------------------------------
-    # let's train!
 
-    random = RNG(1337)
-    # DONE: actually using this rng for the model initialization
+# -----------------------------------------------------------------------------
+# let's train!
 
-    # "train" the Tokenizer, so we're able to map between characters and tokens
-    train_text = open('data/train.txt', 'r').read()
-    assert all(c == '\n' or ('a' <= c <= 'z') for c in train_text)
-    uchars = sorted(list(set(train_text))) # unique characters we see in the input
-    vocab_size = len(uchars)
-    char_to_token = {c: i for i, c in enumerate(uchars)}
-    token_to_char = {i: c for i, c in enumerate(uchars)}
-    EOT_TOKEN = char_to_token['\n'] # designate \n as the delimiting <|endoftext|> token
-    # pre-tokenize all the splits one time up here
-    test_tokens = [char_to_token[c] for c in open('data/test.txt', 'r').read()]
-    val_tokens = [char_to_token[c] for c in open('data/val.txt', 'r').read()]
-    train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
+random = RNG(1337)
+# DONE: actually using this rng for the model initialization
 
-    # create the model
-    context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
-    embedding_size = 24
-    hidden_size = 512
-    model = MLP(vocab_size, context_length, embedding_size, hidden_size, random)
+# "train" the Tokenizer, so we're able to map between characters and tokens
+train_text = open('data/train.txt', 'r').read()
+assert all(c == '\n' or ('a' <= c <= 'z') for c in train_text)
+uchars = sorted(list(set(train_text))) # unique characters we see in the input
+vocab_size = len(uchars)
+char_to_token = {c: i for i, c in enumerate(uchars)}
+token_to_char = {i: c for i, c in enumerate(uchars)}
+EOT_TOKEN = char_to_token['\n'] # designate \n as the delimiting <|endoftext|> token
+# pre-tokenize all the splits one time up here
+test_tokens = [char_to_token[c] for c in open('data/test.txt', 'r').read()]
+val_tokens = [char_to_token[c] for c in open('data/val.txt', 'r').read()]
+train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 
-    # create the optimizer
-    learning_rate = 1e-3
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+# create the model
+context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
+embedding_size = 24
+hidden_size = 512
+model = MLP(vocab_size, context_length, embedding_size, hidden_size, random)
 
-    # training loop
-    batch_size = 64
-    num_steps = 50000
-    print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
-    train_data_iter = dataloader(train_tokens, context_length, batch_size)
-    for step in range(num_steps):
-        # cosine learning rate schedule, from max lr to 0
-        lr = learning_rate * 0.5 * (1 + math.cos(math.pi * step / num_steps))
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-        # every now and then evaluate the validation loss
-        last_step = step == num_steps - 1
-        if step % 200 == 0 or last_step:
-            train_loss = eval_split(model, train_tokens, max_batches=20)
-            val_loss = eval_split(model, val_tokens)
-            print(f'step {step} | train_loss {train_loss:.4f} | val_loss {val_loss:.4f} | lr {lr:e}')
-        # ensure the model is in training mode
-        model.train()
-        # get the next batch of training data
-        inputs, targets = next(train_data_iter)
-        # forward through the model
-        logits, loss = model(inputs, targets)
-        # backpropagate and update the weights
-        loss.backward()
-        # step the optimizer
-        optimizer.step()
-        optimizer.zero_grad()
+# create the optimizer
+learning_rate = 1e-3
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+
+# training loop
+batch_size = 64
+num_steps = 50000
+print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
+train_data_iter = dataloader(train_tokens, context_length, batch_size)
+for step in range(num_steps):
+    # cosine learning rate schedule, from max lr to 0
+    lr = learning_rate * 0.5 * (1 + math.cos(math.pi * step / num_steps))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    # every now and then evaluate the validation loss
+    last_step = step == num_steps - 1
+    if step % 200 == 0 or last_step:
+        train_loss = eval_split(model, train_tokens, max_batches=20)
+        val_loss = eval_split(model, val_tokens)
+        print(f'step {step} | train_loss {train_loss:.4f} | val_loss {val_loss:.4f} | lr {lr:e}')
+    # ensure the model is in training mode
+    model.train()
+    # get the next batch of training data
+    inputs, targets = next(train_data_iter)
+    # forward through the model
+    logits, loss = model(inputs, targets)
+    # backpropagate and update the weights
+    loss.backward()
+    # step the optimizer
+    optimizer.step()
+    optimizer.zero_grad()
