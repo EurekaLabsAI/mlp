@@ -99,7 +99,7 @@ if __name__ == "__main__":
     # let's train!
 
     random = RNG(1337)
-    # TODO: actually use this rng for the model initialization
+    # DONE: actually using this rng for the model initialization
 
     # "train" the Tokenizer, so we're able to map between characters and tokens
     train_text = open('data/train.txt', 'r').read()
