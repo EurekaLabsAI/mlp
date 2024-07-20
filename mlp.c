@@ -103,6 +103,7 @@ typedef struct {
     float* grad_fc1_weights;
     float* grad_fc1_bias;
     float* grad_emb;
+    float* grad_wte;
 } MLP;
 
 float* read_parameter_array(FILE *file, int size) {
@@ -168,24 +169,18 @@ void encoder_forward(float *act_emb, int *inputs, float *wte, int B, int T, int 
 
 }
 
-void matmul_forward(float *c, float *a, float *b, int m, int n, int k) {
+void matmul_forward(float *c, float *a, float *b, float *bias, int m, int n, int k) {
     // TODO: check this works as expected
-    // TODO: merge with bias forward
-    // C = A * B
+    // C = A * B + bias
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < k; j++) {
             c[i*k + j] = 0;
             for (int l = 0; l < n; l++) {
                 c[i*k + j] += a[i*n + l] * b[l*k + j];
             }
-        }
-    }
-}
 
-void add_bias(float *x, float *bias, int size, int batch_size) {
-    for (int i = 0; i < batch_size; i++) {
-        for (int j = 0; j < size; j++) {
-            x[i*size + j] += bias[j];
+            // bias
+            c[i*k + j] += bias[j];
         }
     }
 }
@@ -251,13 +246,11 @@ float forward(MLP *model) {
     encoder_forward(model->act_emb, model->inputs, model->wte, B, T, E);
 
     // forward through the first linear layer
-    matmul_forward(model->act_h, model->act_emb, model->fc1_weights, B, T * E, H);
-    add_bias(model->act_h, model->fc1_bias, H, B);
+    matmul_forward(model->act_h, model->act_emb, model->fc1_weights, model->fc1_bias, B, T * E, H);
     relu_forward(model->act_h, B * H);
 
     // forward through the second linear layer
-    matmul_forward(model->act_logits, model->act_h, model->fc2_weights, B, H, V);  // (B, H) * (H, V) = (B, V)
-    add_bias(model->act_logits, model->fc2_bias, V, B);
+    matmul_forward(model->act_logits, model->act_h, model->fc2_weights, model->fc2_bias, B, H, V);  // (B, H) * (H, V) = (B, V)
     softmax(model->act_probs, model->act_logits, V, B);
 
     float loss = cross_entropy(model->act_probs, model->targets, V, B);
@@ -274,6 +267,60 @@ void crossentropy_softmax_backward(float* grad_logits, float* act_probs, int* ta
             float p = act_probs[b*V + i];
             float indicator = i == targets[b] ? 1.0f : 0.0f;
             grad_logits[b*V + i] += (p - indicator) * (1 / B);
+        }
+    }
+}
+
+void matmul_backward(float* dinp, float* dweight, float* dbias,
+                     const float* dout, const float* inp, const float* weight,
+                     int B, int C, int OC) {
+    // TODO: make sure this works
+    // TODO: refactor
+    // backward into inp first
+    for (int b = 0; b < B; b++) {
+        const float* dout_b = dout + b * OC;
+        float* dinp_b = dinp + b * C;
+        for (int o = 0; o < OC; o++) {
+            const float* wrow = weight + o*C;
+            float d = dout_b[o];
+            for (int i = 0; i < C; i++) {
+                dinp_b[i] += wrow[i] * d;
+            }
+        }
+    }
+    // backward into weight/bias
+    for (int o = 0; o < OC; o++) {
+        for (int b = 0; b < B; b++) {
+            const float* dout_b = dout + b * OC;
+            const float* inp_b = inp + b * C;
+            float* dwrow = dweight + o*C;
+            float d = dout_b[o];
+            if (dbias != NULL) { dbias[o] += d; }
+            for (int i = 0; i < C; i++) {
+                dwrow[i] += inp_b[i] * d;
+            }
+        }
+    }
+}
+
+void relu_backward(float* grad_x, float* grad_y, float* x, int size) {
+    for (int i = 0; i < size; i++) {
+        grad_x[i] = grad_y[i] * (x[i] > 0);
+    }
+}
+
+void encoder_backward(float* dwte,
+                      float* dout, int* inp,
+                      int B, int T, int C) {
+    for (int b = 0; b < B; b++) {
+        for (int t = 0; t < T; t++) {
+            float* dout_bt = dout + b * T * C + t * C;
+            int ix = inp[b * T + t];
+            float* dwte_ix = dwte + ix * C;
+            for (int i = 0; i < C; i++) {
+                float d = dout_bt[i];
+                dwte_ix[i] += d;
+            }
         }
     }
 }
@@ -295,12 +342,24 @@ void backward(MLP *model) {
         model->grad_fc1_weights = (float*)callocCheck(H * T * E, sizeof(float));
         model->grad_fc1_bias = (float*)callocCheck(H, sizeof(float));
         model->grad_emb = (float*)callocCheck(B * T * E, sizeof(float));
+        model->grad_wte = (float*)callocCheck(V * E, sizeof(float));
     }
 
     crossentropy_softmax_backward(model->grad_logits, model->act_probs, model->targets, B, V);
 
     // backprop through the second linear layer
+    matmul_backward(model->grad_h, model->grad_fc2_weights, model->grad_fc2_bias,
+                    model->grad_logits, model->act_h, model->fc2_weights, B, H, V);
 
+    // backprop through relu
+    relu_backward(model->grad_fc1, model->grad_h, model->act_h, B * H);
+
+    // backprop through the first linear layer
+    matmul_backward(model->grad_emb, model->grad_fc1_weights, model->grad_fc1_bias,
+                    model->grad_fc1, model->act_emb, model->fc1_weights, B, T * E, H);
+
+    // backprop through the embedding layer
+    encoder_backward(model->grad_wte, model->grad_emb, model->inputs, B, T, E);
 }
 
 // -----------------------------------------------------------------------------
