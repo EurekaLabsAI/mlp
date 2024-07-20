@@ -33,13 +33,24 @@ class MLP(nn.Module):
         self._init_weights(g)
 
     def _init_weights(self, g):
-        # initialize the weights of the model
-        for p in self.parameters():
-            scale = (12 / p.size(1))**0.5 # rescale weights from -0.5,0.5 uniform to variance 1
-            w = torch.empty_like(p).reshape(-1)
-            for i in range(w.numel()):
-                    w[i] = (g.random() - 0.5) * scale
-            p.data = w.reshape(p.shape)
+        # Init wte
+        temp = torch.empty_like(self.wte.weight.data)
+        for i in range(temp.size(0)):
+            for j in range(temp.size(1)):
+                temp[i, j] = (g.random() - 0.5) * 2 
+        self.wte.weight.data = temp
+        # Init mlp
+        for layer in self.mlp:
+            if isinstance(layer, nn.Linear):
+                fan_in = layer.weight.size(1) # torch stores weights as (out, in)
+                fan_out = layer.weight.size(0)
+                temp = torch.empty_like(layer.weight.data)
+                scale = 2 * (6/(fan_in + fan_out))**0.5 # rescale from -0.5, 0.5 to -scale, scale
+                for i in range(layer.weight.size(0)):
+                    for j in range(layer.weight.size(1)):
+                        temp[i, j] = (g.random() - 0.5) * scale
+                layer.weight.data = temp
+        
 
 
     def forward(self, idx, targets=None):
