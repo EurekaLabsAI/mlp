@@ -104,6 +104,36 @@ float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes
     return params_memory;
 }
 
+#define NUM_ACTIVATION_TENSORS 5
+typedef struct {
+    float* emb; // (B, T*E)
+    float* fc1; // (B, H)
+    float* h; // (B, H)
+    float* logits; // (B, V)
+    float* probs; // (B, V)
+} ActivationTensors;
+
+void fill_in_activation_sizes(size_t* act_sizes, int batch_size, int context_length, int embedding_size, int hidden_size, int vocab_size) {
+    act_sizes[0] = batch_size * context_length * embedding_size;
+    act_sizes[1] = batch_size * hidden_size;
+    act_sizes[2] = batch_size * hidden_size;
+    act_sizes[3] = batch_size * vocab_size;
+    act_sizes[4] = batch_size * vocab_size;
+}
+
+float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes, size_t num_activations) {
+    float* acts_memory = (float*)mallocCheck(num_activations * sizeof(float));
+    float** ptrs[] = {
+        &acts->emb, &acts->fc1, &acts->h, &acts->logits, &acts->probs
+    };
+    float* acts_memory_iterator = acts_memory;
+    for (size_t i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+        *(ptrs[i]) = acts_memory_iterator;
+        acts_memory_iterator += act_sizes[i];
+    }
+    return acts_memory;
+}
+
 // Define the structure for the MLP
 typedef struct {
     // config
@@ -112,31 +142,25 @@ typedef struct {
     int embedding_size;
     int hidden_size;
     int batch_size;
-    // model parameters
+    // parameters
     // TODO(gordicaleksa): in the end prefix this with "w_" to denote weights
     ParameterTensors params;
     size_t param_sizes[NUM_PARAMETER_TENSORS];
     float *params_memory;
     size_t num_parameters;
     // activations
-    float *act_emb;
-    float *act_h;
-    float *act_logits;
-    float *act_probs;
+    ActivationTensors acts;
+    size_t act_sizes[NUM_ACTIVATION_TENSORS];
+    float* acts_memory;
+    size_t num_activations;
+    // grads
+    ParameterTensors grads;
+    float* grads_memory;
+    ActivationTensors grads_acts;
+    float* grads_acts_memory;
     // forward pass
     int* inputs; // the input tokens for the current forward pass
     int* targets; // the target tokens for the current forward pass
-    // backward pass
-    float *grads_memory;
-    float* grad_logits;
-    float* grad_fc2_weights;
-    float* grad_fc2_bias;
-    float* grad_h;
-    float* grad_fc1;
-    float* grad_fc1_weights;
-    float* grad_fc1_bias;
-    float* grad_emb;
-    float* grad_wte;
 } MLP;
 
 MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
@@ -256,28 +280,37 @@ float forward(MLP *model) {
     int H = model->hidden_size;
     int V = model->vocab_size;
 
-    if (model->act_emb == NULL) {  // lazy initialization of activations the first time we call forward
-        model->act_emb = (float*)mallocCheck(B * T * E * sizeof(float));
-        model->act_h = (float*)mallocCheck(B * H * sizeof(float));
-        model->act_logits = (float*)mallocCheck(B * V * sizeof(float));
-        model->act_probs = (float*)mallocCheck(B * V * sizeof(float));
+    if (model->acts_memory == NULL) {  // lazy initialization of activations the first time we call forward
+
+        // allocate space for all the activations and read them in
+        fill_in_activation_sizes(model->act_sizes, B, T, E, H, V);
+
+        size_t num_activations = 0;
+        for (size_t i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
+            num_activations += model->act_sizes[i];
+        }
+        printf("num_activations: %zu\n", num_activations);
+        model->num_activations = num_activations;
+
+        model->acts_memory = malloc_and_point_activations(&model->acts, model->act_sizes, num_activations);
     }
 
     ParameterTensors params = model->params; // for brevity
+    ActivationTensors acts = model->acts;
 
     // encode all the tokens using the embedding table
     // inputs are the input tokens, (B, T) array of integers
-    encoder_forward(model->act_emb, model->inputs, params.wte, B, T, E);
+    encoder_forward(acts.emb, model->inputs, params.wte, B, T, E);
 
     // forward through the first linear layer
-    matmul_forward(model->act_h, model->act_emb, params.fc1_weights, params.fc1_bias, B, T * E, H);
-    relu_forward(model->act_h, B * H);
+    matmul_forward(acts.h, acts.emb, params.fc1_weights, params.fc1_bias, B, T * E, H);
+    relu_forward(acts.h, B * H);
 
     // forward through the second linear layer
-    matmul_forward(model->act_logits, model->act_h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) * (H, V) = (B, V)
-    softmax(model->act_probs, model->act_logits, V, B);
+    matmul_forward(acts.logits, acts.h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) * (H, V) = (B, V)
+    softmax(acts.probs, acts.logits, V, B);
 
-    float loss = cross_entropy(model->act_probs, model->targets, V, B);
+    float loss = cross_entropy(acts.probs, model->targets, V, B);
     return loss;
 }
 
@@ -356,36 +389,31 @@ void backward(MLP *model) {
     int E = model->embedding_size;
     int H = model->hidden_size;
     int V = model->vocab_size;
+    ParameterTensors params = model->params;
+    ParameterTensors grads = model->grads;
+    ActivationTensors acts = model->acts;
+    ActivationTensors grads_acts = model->grads_acts;
 
-    if (model->grad_logits == NULL) {  // lazy initialization of gradients the first time we call backward
-        model->grad_logits = (float*)callocCheck(B * V, sizeof(float));
-        model->grad_fc2_weights = (float*)callocCheck(V * H, sizeof(float));
-        model->grad_fc2_bias = (float*)callocCheck(V, sizeof(float));
-        model->grad_h = (float*)callocCheck(B * H, sizeof(float));
-        model->grad_fc1 = (float*)callocCheck(B * H, sizeof(float));
-        model->grad_fc1_weights = (float*)callocCheck(H * T * E, sizeof(float));
-        model->grad_fc1_bias = (float*)callocCheck(H, sizeof(float));
-        model->grad_emb = (float*)callocCheck(B * T * E, sizeof(float));
-        model->grad_wte = (float*)callocCheck(V * E, sizeof(float));
+    if (model->grads_memory == NULL) {  // lazy initialization of gradients the first time we call backward
+        model->grads_memory = malloc_and_point_parameters(&model->grads, model->param_sizes, model->num_parameters);
+        model->grads_acts_memory = malloc_and_point_activations(&model->grads_acts, model->act_sizes, model->num_activations);
     }
 
-    ParameterTensors params = model->params; // for brevity
-
-    crossentropy_softmax_backward(model->grad_logits, model->act_probs, model->targets, B, V);
+    crossentropy_softmax_backward(grads_acts.logits, acts.probs, model->targets, B, V);
 
     // backprop through the second linear layer
-    matmul_backward(model->grad_h, model->grad_fc2_weights, model->grad_fc2_bias,
-                    model->grad_logits, model->act_h, params.fc2_weights, B, H, V);
+    matmul_backward(grads_acts.h, grads.fc2_weights, grads.fc2_bias,
+                    grads_acts.logits, acts.h, params.fc2_weights, B, H, V);
 
     // backprop through relu
-    relu_backward(model->grad_fc1, model->grad_h, model->act_h, B * H);
+    relu_backward(grads_acts.fc1, grads_acts.h, acts.h, B * H);
 
     // backprop through the first linear layer
-    matmul_backward(model->grad_emb, model->grad_fc1_weights, model->grad_fc1_bias,
-                    model->grad_fc1, model->act_emb, params.fc1_weights, B, T * E, H);
+    matmul_backward(grads_acts.emb, grads.fc1_weights, grads.fc1_bias,
+                    grads_acts.fc1, acts.emb, params.fc1_weights, B, T * E, H);
 
     // backprop through the embedding layer
-    encoder_backward(model->grad_wte, model->grad_emb, model->inputs, B, T, E);
+    encoder_backward(grads.wte, grads_acts.emb, model->inputs, B, T, E);
 }
 
 // -----------------------------------------------------------------------------
@@ -438,7 +466,7 @@ void adam_free(AdamW *optimizer) {
 // simple DataLoader that iterates over all the n-grams
 
 void dataloader(MLP* model, int *tokens, int context_length, int batch_size, int token_cnt) {
-    if (model->act_emb == NULL) {  // lazy initialization the first time we call dataloader
+    if (model->acts_memory == NULL) {  // lazy initialization the first time we call dataloader
         model->inputs = (int*)mallocCheck(batch_size * model->context_length * sizeof(int));
         model->targets = (int*)mallocCheck(batch_size * sizeof(int));
     }
@@ -560,6 +588,7 @@ int main() {
         backward(&model);
         // step the optimizer - update the weights
         adamw_step(optimizer, grads, sizeof(grads) / sizeof(grads[0]));
+        // TODO: zero grad buffers
     }
 
     // TODO: free up all the memory
