@@ -37,6 +37,28 @@ extern inline void fclose_check(FILE *fp, const char *file, int line) {
 
 #define fcloseCheck(fp) fclose_check(fp, __FILE__, __LINE__)
 
+extern inline void fread_check(void *ptr, size_t size, size_t nmemb, FILE *stream, const char *file, int line) {
+    size_t result = fread(ptr, size, nmemb, stream);
+    if (result != nmemb) {
+        if (feof(stream)) {
+            fprintf(stderr, "Error: Unexpected end of file at %s:%d\n", file, line);
+        } else if (ferror(stream)) {
+            fprintf(stderr, "Error: File read error at %s:%d\n", file, line);
+        } else {
+            fprintf(stderr, "Error: Partial read at %s:%d. Expected %zu elements, read %zu\n",
+                    file, line, nmemb, result);
+        }
+        fprintf(stderr, "Error details:\n");
+        fprintf(stderr, "  File: %s\n", file);
+        fprintf(stderr, "  Line: %d\n", line);
+        fprintf(stderr, "  Expected elements: %zu\n", nmemb);
+        fprintf(stderr, "  Read elements: %zu\n", result);
+        exit(EXIT_FAILURE);
+    }
+}
+
+#define freadCheck(ptr, size, nmemb, stream) fread_check(ptr, size, nmemb, stream, __FILE__, __LINE__)
+
 extern inline void *malloc_check(size_t size, const char *file, int line) {
     void *ptr = malloc(size);
     if (ptr == NULL) {
@@ -70,6 +92,14 @@ extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, in
 // -----------------------------------------------------------------------------
 // MLP model
 
+typedef struct {
+    size_t vocab_size;
+    size_t context_length;
+    size_t embedding_size;
+    size_t hidden_size;
+    size_t batch_size;
+} MLPConfig;
+
 // TODO: see whether shapes are correct
 #define NUM_PARAMETER_TENSORS 5
 typedef struct {
@@ -80,12 +110,19 @@ typedef struct {
     float *fc2_bias;  // (V,)
 } ParameterTensors;
 
-void fill_in_parameter_sizes(size_t* param_sizes, int vocab_size, int context_length, int embedding_size, int hidden_size) {
-    param_sizes[0] = vocab_size * embedding_size;
-    param_sizes[1] = hidden_size * embedding_size * context_length;
-    param_sizes[2] = hidden_size;
-    param_sizes[3] = vocab_size * hidden_size;
-    param_sizes[4] = vocab_size;
+void fill_in_parameter_sizes(size_t* param_sizes, MLPConfig config) {
+    size_t V, T, E, H, B;
+    V = config.vocab_size;
+    T = config.context_length;
+    E = config.embedding_size;
+    H = config.hidden_size;
+    B = config.batch_size;
+
+    param_sizes[0] = V * E;
+    param_sizes[1] = T * E * H;
+    param_sizes[2] = H;
+    param_sizes[3] = H * V;
+    param_sizes[4] = V;
 }
 
 // allocate memory for the parameters and point the individual tensors to the right places
@@ -113,12 +150,19 @@ typedef struct {
     float* probs; // (B, V)
 } ActivationTensors;
 
-void fill_in_activation_sizes(size_t* act_sizes, int batch_size, int context_length, int embedding_size, int hidden_size, int vocab_size) {
-    act_sizes[0] = batch_size * context_length * embedding_size;
-    act_sizes[1] = batch_size * hidden_size;
-    act_sizes[2] = batch_size * hidden_size;
-    act_sizes[3] = batch_size * vocab_size;
-    act_sizes[4] = batch_size * vocab_size;
+void fill_in_activation_sizes(size_t* act_sizes, MLPConfig config) {
+    size_t V, T, E, H, B;
+    V = config.vocab_size;
+    T = config.context_length;
+    E = config.embedding_size;
+    H = config.hidden_size;
+    B = config.batch_size;
+
+    act_sizes[0] = B * T * E;
+    act_sizes[1] = B * H;
+    act_sizes[2] = B * H;
+    act_sizes[3] = B * V;
+    act_sizes[4] = B * V;
 }
 
 float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes, size_t num_activations) {
@@ -136,14 +180,8 @@ float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes, 
 
 // Define the structure for the MLP
 typedef struct {
-    // config
-    int vocab_size;
-    int context_length;
-    int embedding_size;
-    int hidden_size;
-    int batch_size;
+    MLPConfig config;
     // parameters
-    // TODO(gordicaleksa): in the end prefix this with "w_" to denote weights
     ParameterTensors params;
     size_t param_sizes[NUM_PARAMETER_TENSORS];
     float *params_memory;
@@ -171,18 +209,19 @@ MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
     if (model_header[0] != 20240719) { printf("Bad magic model file\n"); exit(1); }
 
     // read in hyperparameters
-    model->vocab_size = model_header[1];
-    model->context_length = model_header[2];
-    model->embedding_size = model_header[3];
-    model->hidden_size = model_header[4];
+    size_t V, T, E, H;
+    model->config.vocab_size = V = model_header[1];
+    model->config.context_length = T = model_header[2];
+    model->config.embedding_size = E = model_header[3];
+    model->config.hidden_size = H = model_header[4];
     printf("[MLP]\n");
-    printf("vocab_size: %d\n", model->vocab_size);
-    printf("context_length: %d\n", model->context_length);
-    printf("embedding_size: %d\n", model->embedding_size);
-    printf("hidden_size: %d\n", model->hidden_size);
+    printf("vocab_size: %d\n", V);
+    printf("context_length: %d\n", T);
+    printf("embedding_size: %d\n", E);
+    printf("hidden_size: %d\n", H);
 
     // allocate space for all the parameters and read them in
-    fill_in_parameter_sizes(model->param_sizes, model->vocab_size, model->context_length, model->embedding_size, model->hidden_size);
+    fill_in_parameter_sizes(model->param_sizes, model->config);
 
     // count the number of parameters
     size_t num_parameters = 0;
@@ -206,11 +245,6 @@ void mlp_free(MLP *model) {
     free(model->grads_acts_memory);
     free(model->inputs);
     free(model->targets);
-}
-
-void zero_grad(MLP *model) {
-    if(model->grads_memory != NULL) { memset(model->grads_memory, 0, model->num_parameters * sizeof(float)); }
-    if(model->grads_acts_memory != NULL) { memset(model->grads_acts_memory, 0, model->num_activations * sizeof(float)); }
 }
 
 // -----------------------------------------------------------------------------
@@ -284,11 +318,11 @@ float forward(MLP *model) {
     }
 
     // convenience shortcuts
-    int B = model->batch_size;
-    int T = model->context_length;
-    int E = model->embedding_size;
-    int H = model->hidden_size;
-    int V = model->vocab_size;
+    int B = model->config.batch_size;
+    int T = model->config.context_length;
+    int E = model->config.embedding_size;
+    int H = model->config.hidden_size;
+    int V = model->config.vocab_size;
 
     if (model->acts_memory == NULL) {  // lazy initialization of activations the first time we call forward
 
@@ -394,11 +428,11 @@ void encoder_backward(float* dwte,
 
 void backward(MLP *model) {
     // convenience shortcuts
-    int B = model->batch_size;
-    int T = model->context_length;
-    int E = model->embedding_size;
-    int H = model->hidden_size;
-    int V = model->vocab_size;
+    int B = model->config.batch_size;
+    int T = model->config.context_length;
+    int E = model->config.embedding_size;
+    int H = model->config.hidden_size;
+    int V = model->config.vocab_size;
     ParameterTensors params = model->params;
     ParameterTensors grads = model->grads;
     ActivationTensors acts = model->acts;
@@ -424,6 +458,11 @@ void backward(MLP *model) {
 
     // backprop through the embedding layer
     encoder_backward(grads.wte, grads_acts.emb, model->inputs, B, T, E);
+}
+
+void zero_grad(MLP *model) {
+    if(model->grads_memory != NULL) { memset(model->grads_memory, 0, model->num_parameters * sizeof(float)); }
+    if(model->grads_acts_memory != NULL) { memset(model->grads_acts_memory, 0, model->num_activations * sizeof(float)); }
 }
 
 // -----------------------------------------------------------------------------
@@ -475,7 +514,7 @@ void adam_free(AdamW *optimizer) {
 
 void dataloader(MLP* model, int *tokens, int context_length, int batch_size, int token_cnt) {
     if (model->acts_memory == NULL) {  // lazy initialization the first time we call dataloader
-        model->inputs = (int*)mallocCheck(batch_size * model->context_length * sizeof(int));
+        model->inputs = (int*)mallocCheck(batch_size * model->config.context_length * sizeof(int));
         model->targets = (int*)mallocCheck(batch_size * sizeof(int));
     }
 
@@ -500,7 +539,7 @@ float eval_split(MLP *model, int *tokens, int token_cnt, int max_batches, int ba
     int num_batches = token_cnt / batch_size;
     num_batches = max_batches ? min(num_batches, max_batches) : num_batches;
     for (int i = 0; i < num_batches; i++) {
-        dataloader(&model, tokens, model->context_length, batch_size, token_cnt);
+        dataloader(&model, tokens, model->config.context_length, batch_size, token_cnt);
         float loss = forward(model);
         total_loss += loss;
     }
@@ -560,9 +599,6 @@ int main() {
     // create the model
     MLP model;
     mlp_build_from_checkpoint(&model, "mlp_weights.bin");
-    int context_length = model.context_length;
-    int embedding_size = model.embedding_size;
-    int hidden_size = model.hidden_size;
 
     // optimizer
     float learning_rate = 1e-3;
@@ -576,7 +612,7 @@ int main() {
     // training loop
     int batch_size = 64;
     int num_steps = 50000;
-    model.batch_size = batch_size;
+    model.config.batch_size = batch_size;
     printf("num_steps %d, num_epochs %.2f\n", num_steps, num_steps * batch_size / (float)train_token_count);
     for (int step = 0; step < num_steps; step++) {
         // cosine learning rate schedule, from max lr to 0
@@ -590,7 +626,7 @@ int main() {
         }
 
         // get the next batch of training data
-        dataloader(&model, train_tokens, context_length, batch_size, train_token_count);
+        dataloader(&model, train_tokens, model.config.context_length, batch_size, train_token_count);
         // forward through the model
         float loss = forward(&model);
         // zero out the gradients
