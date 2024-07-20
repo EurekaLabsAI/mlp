@@ -21,7 +21,7 @@ class MLP(nn.Module):
     Bengio et al. 2003 https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
     """
 
-    def __init__(self, vocab_size, context_length, embedding_size, hidden_size):
+    def __init__(self, vocab_size, context_length, embedding_size, hidden_size, g):
         super().__init__()
         self.wte = nn.Embedding(vocab_size, embedding_size) # token embedding table
         self.mlp = nn.Sequential(
@@ -30,6 +30,17 @@ class MLP(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_size, vocab_size)
         )
+        self._init_weights(g)
+
+    def _init_weights(self, g):
+        # initialize the weights of the model
+        for p in self.parameters():
+            scale = (12 / p.size(1))**0.5 # rescale weights from -0.5,0.5 uniform to variance 1
+            w = torch.empty_like(p).reshape(-1)
+            for i in range(w.numel()):
+                    w[i] = (g.random() - 0.5) * scale
+            p.data = w.reshape(p.shape)
+
 
     def forward(self, idx, targets=None):
         # idx are the input tokens, (B, T) tensor of integers
@@ -91,7 +102,6 @@ def eval_split(model, tokens, max_batches=None):
 # let's train!
 
 random = RNG(1337)
-# TODO: actually use this rng for the model initialization
 
 # "train" the Tokenizer, so we're able to map between characters and tokens
 train_text = open('data/train.txt', 'r').read()
@@ -110,7 +120,7 @@ train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
 embedding_size = 24
 hidden_size = 512
-model = MLP(vocab_size, context_length, embedding_size, hidden_size)
+model = MLP(vocab_size, context_length, embedding_size, hidden_size, g=random)
 
 # create the optimizer
 learning_rate = 1e-3
