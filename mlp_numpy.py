@@ -30,9 +30,9 @@ class MLP:
                 return array.copy()
 
             self.wte = read_fun((self.vocab_size, self.embedding_size), file)
-            self.fc1_weights = read_fun((self.hidden_size, self.embedding_size * self.context_length), file)
+            self.fc1_weights = read_fun((self.embedding_size * self.context_length, self.hidden_size), file)
             self.fc1_bias = read_fun((self.hidden_size,), file)
-            self.fc2_weights = read_fun((self.vocab_size, self.hidden_size), file)
+            self.fc2_weights = read_fun((self.hidden_size, self.vocab_size), file)
             self.fc2_bias = read_fun((self.vocab_size,), file)
 
         self.act_cache = {}  # cache for the activations for the backward pass
@@ -64,8 +64,8 @@ class MLP:
         # concat all of the embeddings together
         emb = emb.reshape(B, -1) # (B, T * embedding_size)
         # forward through the MLP
-        h = self.relu(np.dot(emb, self.fc1_weights.T) + self.fc1_bias)
-        logits = np.dot(h, self.fc2_weights.T) + self.fc2_bias
+        h = self.relu(np.dot(emb, self.fc1_weights) + self.fc1_bias)
+        logits = np.dot(h, self.fc2_weights) + self.fc2_bias
 
         self.act_cache['idx'] = idx
         self.act_cache['targets'] = targets
@@ -97,16 +97,16 @@ class MLP:
         dL_dlogits[np.arange(len(targets)), targets] -= 1
         dL_dlogits /= len(targets)
 
-        dL_dfc2_weights = np.dot(dL_dlogits.T, h)
+        dL_dfc2_weights = np.dot(h.T, dL_dlogits)
         dL_dfc2_bias = np.sum(dL_dlogits, axis=0)
 
-        dL_dh = np.dot(dL_dlogits, self.fc2_weights)
+        dL_dh = np.dot(dL_dlogits, self.fc2_weights.T)
         dL_dfc1 = dL_dh * (h > 0)
 
-        dL_dfc1_weights = np.dot(dL_dfc1.T, emb)
+        dL_dfc1_weights = np.dot(emb.T, dL_dfc1)
         dL_dfc1_bias = np.sum(dL_dfc1, axis=0)
 
-        dL_emb = np.dot(dL_dfc1, self.fc1_weights).reshape(B, T, self.embedding_size)
+        dL_emb = np.dot(dL_dfc1, self.fc1_weights.T).reshape(B, T, self.embedding_size)
         dL_dwte = np.zeros_like(self.wte)
         for i in range(B):
             for j in range(T):
