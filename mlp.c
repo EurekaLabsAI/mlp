@@ -52,6 +52,21 @@ extern inline void *malloc_check(size_t size, const char *file, int line) {
 
 #define mallocCheck(size) malloc_check(size, __FILE__, __LINE__)
 
+extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, int line) {
+    void *ptr = calloc(nmemb, size);
+    if (ptr == NULL) {
+        fprintf(stderr, "Error: Memory allocation failed at %s:%d\n", file, line);
+        fprintf(stderr, "Error details:\n");
+        fprintf(stderr, "  File: %s\n", file);
+        fprintf(stderr, "  Line: %d\n", line);
+        fprintf(stderr, "  Size: %zu bytes\n", nmemb * size);
+        exit(EXIT_FAILURE);
+    }
+    return ptr;
+}
+
+#define callocCheck(nmemb, size) calloc_check(nmemb, size, __FILE__, __LINE__)
+
 // -----------------------------------------------------------------------------
 // MLP model
 
@@ -76,15 +91,18 @@ typedef struct {
     float *act_h;
     float *act_logits;
     float *act_probs;
-    // For forward pass
+    // forward pass
     int* inputs; // the input tokens for the current forward pass
     int* targets; // the target tokens for the current forward pass
-    // For backward pass
-    int *idx;
-    int *targets;
-    float *emb;
-    float *h;
-    float *probs;
+    // backward pass
+    float* grad_logits;
+    float* grad_fc2_weights;
+    float* grad_fc2_bias;
+    float* grad_h;
+    float* grad_fc1;
+    float* grad_fc1_weights;
+    float* grad_fc1_bias;
+    float* grad_emb;
 } MLP;
 
 float* read_parameter_array(FILE *file, int size) {
@@ -138,7 +156,7 @@ void mlp_free(MLP *model) {
 }
 
 // -----------------------------------------------------------------------------
-// Forward and backward pass
+// forward pass
 
 void encoder_forward(float *act_emb, int *inputs, float *wte, int B, int T, int E) {
     for (int i = 0; i < B; i++) {
@@ -152,6 +170,7 @@ void encoder_forward(float *act_emb, int *inputs, float *wte, int B, int T, int 
 
 void matmul_forward(float *c, float *a, float *b, int m, int n, int k) {
     // TODO: check this works as expected
+    // TODO: merge with bias forward
     // C = A * B
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < k; j++) {
@@ -213,7 +232,7 @@ float forward(MLP *model) {
         exit(1);
     }
 
-    // convenience variables
+    // convenience shortcuts
     int B = model->batch_size;
     int T = model->context_length;
     int E = model->embedding_size;
@@ -239,95 +258,49 @@ float forward(MLP *model) {
     // forward through the second linear layer
     matmul_forward(model->act_logits, model->act_h, model->fc2_weights, B, H, V);  // (B, H) * (H, V) = (B, V)
     add_bias(model->act_logits, model->fc2_bias, V, B);
-    softmax(model->probs, model->act_logits, V, B);
+    softmax(model->act_probs, model->act_logits, V, B);
 
-    float loss = cross_entropy(model->probs, model->targets, V, B);
+    float loss = cross_entropy(model->act_probs, model->targets, V, B);
     return loss;
 }
 
-void backward(MLP *model, float *grads, int batch_size) {
-    int B = batch_size;
+// -----------------------------------------------------------------------------
+// backward pass
+
+void crossentropy_softmax_backward(float* grad_logits, float* act_probs, int* targets, int B, int V) {
+    // backwards through both softmax and crossentropy
+    for (int b = 0; b < B; b++) {
+        for (int i = 0; i < V; i++) {
+            float p = act_probs[b*V + i];
+            float indicator = i == targets[b] ? 1.0f : 0.0f;
+            grad_logits[b*V + i] += (p - indicator) * (1 / B);
+        }
+    }
+}
+
+void backward(MLP *model) {
+    // convenience shortcuts
+    int B = model->batch_size;
     int T = model->context_length;
-    int embedding_size = model->embedding_size;
-    int hidden_size = model->hidden_size;
-    int vocab_size = model->vocab_size;
+    int E = model->embedding_size;
+    int H = model->hidden_size;
+    int V = model->vocab_size;
 
-    float *dL_dlogits = model->probs;
-    for (int i = 0; i < B; i++) {
-        dL_dlogits[i * vocab_size + model->targets[i]] -= 1;
+    if (model->grad_logits == NULL) {  // lazy initialization of gradients the first time we call backward
+        model->grad_logits = (float*)callocCheck(B * V, sizeof(float));
+        model->grad_fc2_weights = (float*)callocCheck(V * H, sizeof(float));
+        model->grad_fc2_bias = (float*)callocCheck(V, sizeof(float));
+        model->grad_h = (float*)callocCheck(B * H, sizeof(float));
+        model->grad_fc1 = (float*)callocCheck(B * H, sizeof(float));
+        model->grad_fc1_weights = (float*)callocCheck(H * T * E, sizeof(float));
+        model->grad_fc1_bias = (float*)callocCheck(H, sizeof(float));
+        model->grad_emb = (float*)callocCheck(B * T * E, sizeof(float));
     }
 
-    float *dL_dfc2_weights = (float*) calloc(vocab_size * hidden_size, sizeof(float));
-    float *dL_dfc2_bias = (float*) calloc(vocab_size, sizeof(float));
+    crossentropy_softmax_backward(model->grad_logits, model->act_probs, model->targets, B, V);
 
-    for (int i = 0; i < B; i++) {
-        for (int j = 0; j < vocab_size; j++) {
-            for (int k = 0; k < hidden_size; k++) {
-                dL_dfc2_weights[j*hidden_size + k] += dL_dlogits[i*vocab_size + j] * model->h[i*hidden_size + k];
-            }
-            dL_dfc2_bias[j] += dL_dlogits[i*vocab_size + j];
-        }
-    }
+    // backprop through the second linear layer
 
-    float *dL_dh = (float*) calloc(B * hidden_size, sizeof(float));
-    for (int i = 0; i < B; i++) {
-        for (int j = 0; j < hidden_size; j++) {
-            for (int k = 0; k < vocab_size; k++) {
-                dL_dh[i*hidden_size + j] += dL_dlogits[i*vocab_size + k] * model->fc2_weights[k*hidden_size + j];
-            }
-        }
-    }
-
-    float *dL_dfc1 = (float*) malloc(B * hidden_size * sizeof(float));
-    memcpy(dL_dfc1, dL_dh, B * hidden_size * sizeof(float));
-    relu_forward(dL_dfc1, B * hidden_size);
-
-    float *dL_dfc1_weights = (float*) calloc(hidden_size * T * embedding_size, sizeof(float));
-    float *dL_dfc1_bias = (float*) calloc(hidden_size, sizeof(float));
-
-    for (int i = 0; i < B; i++) {
-        for (int j = 0; j < hidden_size; j++) {
-            for (int k = 0; k < T * embedding_size; k++) {
-                dL_dfc1_weights[j * T * embedding_size + k] += dL_dfc1[i*hidden_size + j] * model->emb[i*T*embedding_size + k];
-            }
-            dL_dfc1_bias[j] += dL_dfc1[i*hidden_size + j];
-        }
-    }
-
-    float *dL_emb = (float*) calloc(B * T * embedding_size, sizeof(float));
-    for (int i = 0; i < B; i++) {
-        for (int j = 0; j < T * embedding_size; j++) {
-            for (int k = 0; k < hidden_size; k++) {
-                dL_emb[i*T*embedding_size + j] += dL_dfc1[i*hidden_size + k] * model->fc1_weights[k*T*embedding_size + j];
-            }
-        }
-    }
-
-    float *dL_dwte = (float*) calloc(model->vocab_size * embedding_size, sizeof(float));
-    for (int i = 0; i < B; i++) {
-        for (int j = 0; j < T; j++) {
-            int token = model->idx[i*T + j];
-            for (int k = 0; k < embedding_size; k++) {
-                dL_dwte[token*embedding_size + k] += dL_emb[i*T*embedding_size + j*embedding_size + k];
-            }
-        }
-    }
-
-    // Copy gradients to the grads array
-    memcpy(grads, dL_dwte, model->vocab_size * embedding_size * sizeof(float));
-    memcpy(grads + model->vocab_size * embedding_size, dL_dfc1_weights, hidden_size * T * embedding_size * sizeof(float));
-    memcpy(grads + model->vocab_size * embedding_size + hidden_size * T * embedding_size, dL_dfc1_bias, hidden_size * sizeof(float));
-    memcpy(grads + model->vocab_size * embedding_size + hidden_size * T * embedding_size + hidden_size, dL_dfc2_weights, vocab_size * hidden_size * sizeof(float));
-    memcpy(grads + model->vocab_size * embedding_size + hidden_size * T * embedding_size + hidden_size + vocab_size * hidden_size, dL_dfc2_bias, vocab_size * sizeof(float));
-
-    free(dL_dfc2_weights);
-    free(dL_dfc2_bias);
-    free(dL_dh);
-    free(dL_dfc1);
-    free(dL_dfc1_weights);
-    free(dL_dfc1_bias);
-    free(dL_emb);
-    free(dL_dwte);
 }
 
 // -----------------------------------------------------------------------------
@@ -352,14 +325,15 @@ AdamW* adamw_init(AdamW* optimizer, MLP *model, float lr, float beta1, float bet
     optimizer->weight_decay = weight_decay;
     optimizer->eps = eps;
     optimizer->t = 0;  // timestep - used for bias correction
-    optimizer->m = (float*)calloc(model->num_parameters, sizeof(float));
-    optimizer->v = (float*)calloc(model->num_parameters, sizeof(float));
+    optimizer->m = (float*)callocCheck(model->num_parameters, sizeof(float));
+    optimizer->v = (float*)callocCheck(model->num_parameters, sizeof(float));
     optimizer->model = model;
 }
 
-void adamw_step(AdamW *optimizer, float *grads, int num_params) {
+void adamw_step(AdamW *optimizer, MLP* model) {
     optimizer->t += 1;
-    for (int i = 0; i < num_params; i++) {
+    float* grads = model->grad_logits;  // TODO: check whether this will work
+    for (int i = 0; i < model->num_parameters; i++) {
         optimizer->m[i] = optimizer->beta1 * optimizer->m[i] + (1 - optimizer->beta1) * grads[i];
         optimizer->v[i] = optimizer->beta2 * optimizer->v[i] + (1 - optimizer->beta2) * grads[i] * grads[i];
         float m_hat = optimizer->m[i] / (1 - pow(optimizer->beta1, optimizer->t));
@@ -495,23 +469,16 @@ int main() {
         }
 
         // get the next batch of training data
-        int *inputs, *targets;
         dataloader(&model, train_tokens, context_length, batch_size, train_token_count);
-
-        // Forward pass
+        // forward through the model
         float loss = forward(&model);
-
-        // Backpropagation
-        float grads[model->vocab_size * embedding_size + hidden_size * context_length * embedding_size + hidden_size + vocab_size * hidden_size + vocab_size];
-        backward(model, grads, batch_size);
-
-        // Step the optimizer
+        // backpropagate
+        backward(&model);
+        // step the optimizer - update the weights
         adamw_step(optimizer, grads, sizeof(grads) / sizeof(grads[0]));
-
-        free(inputs);
-        free(targets);
     }
 
+    // TODO: free up all the memory
     adam_free(&optimizer);
     mlp_free(&model);
     return 0;
