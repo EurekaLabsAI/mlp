@@ -100,7 +100,6 @@ typedef struct {
     size_t batch_size;  // (B) batch size
 } MLPConfig;
 
-// TODO: see whether fc1_weights & fc2_weights shapes are correct or perhaps they should be transposed?
 #define NUM_PARAMETER_TENSORS 5
 typedef struct {
     float *wte;  // (V, E)
@@ -260,8 +259,7 @@ void encoder_forward(float *act_emb, int *inputs, float *weight_wte, int B, int 
 }
 
 void matmul_forward(float *c, float *a, float *b, float *bias, int m, int n, int k) {
-    // TODO: check this works as expected
-    // C = A * B + bias
+    // C = A * B + bias; (m, k) = (m, n) * (n, k) + (k,)
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < k; j++) {
             c[i*k + j] = 0;
@@ -326,8 +324,6 @@ float forward(MLP *model) {
     int E = model->config.embedding_size;
     int H = model->config.hidden_size;
     int V = model->config.vocab_size;
-    ParameterTensors params = model->params;
-    ActivationTensors acts = model->acts;
 
     if (model->acts_memory == NULL) {  // lazy initialization of activations the first time we call forward
         fill_in_activation_sizes(model->act_sizes, model->config);
@@ -342,12 +338,15 @@ float forward(MLP *model) {
         model->acts_memory = malloc_and_point_activations(&model->acts, model->act_sizes, num_activations);
     }
 
+    ParameterTensors params = model->params;
+    ActivationTensors acts = model->acts;
+
     // encode all the tokens using the embedding table
     // inputs are the input tokens, a (B, T) array of integers
     encoder_forward(acts.emb, model->inputs, params.wte, B, T, E);
 
     // forward through the first linear layer
-    matmul_forward(acts.h, acts.emb, params.fc1_weights, params.fc1_bias, B, T * E, H);
+    matmul_forward(acts.h, acts.emb, params.fc1_weights, params.fc1_bias, B, T * E, H);  // (B, T*E) * (T*E, H) = (B, H)
     relu_forward(acts.h, B * H);
 
     // forward through the second linear layer
@@ -433,15 +432,16 @@ void backward(MLP *model) {
     int E = model->config.embedding_size;
     int H = model->config.hidden_size;
     int V = model->config.vocab_size;
-    ParameterTensors params = model->params;
-    ParameterTensors grads = model->grads;
-    ActivationTensors acts = model->acts;
-    ActivationTensors grads_acts = model->grads_acts;
 
     if (model->grads_memory == NULL) {  // lazy initialization of gradients the first time we call backward
         model->grads_memory = malloc_and_point_parameters(&model->grads, model->param_sizes, model->num_parameters);
         model->grads_acts_memory = malloc_and_point_activations(&model->grads_acts, model->act_sizes, model->num_activations);
     }
+
+    ParameterTensors params = model->params;
+    ParameterTensors grads = model->grads;
+    ActivationTensors acts = model->acts;
+    ActivationTensors grads_acts = model->grads_acts;
 
     crossentropy_softmax_backward(grads_acts.logits, acts.probs, model->targets, B, V);
 
@@ -617,7 +617,7 @@ int main() {
     printf("num_steps %d, num_epochs %.2f\n", num_steps, num_steps * batch_size / (float)train_token_count);
     for (int step = 0; step < num_steps; step++) {
         // cosine learning rate schedule, from max lr to 0
-        float lr = learning_rate * 0.5 * (1 + cos(M_PI * step / num_steps));
+        float lr = learning_rate * 0.5 * (1 + cosf(M_PI * step / num_steps));
         // every now and then evaluate the validation loss
         int last_step = step == num_steps - 1;
         if (step % 200 == 0 || last_step) {
