@@ -201,6 +201,16 @@ MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
 
 void mlp_free(MLP *model) {
     free(model->params_memory);
+    free(model->acts_memory);
+    free(model->grads_memory);
+    free(model->grads_acts_memory);
+    free(model->inputs);
+    free(model->targets);
+}
+
+void zero_grad(MLP *model) {
+    if(model->grads_memory != NULL) { memset(model->grads_memory, 0, model->num_parameters * sizeof(float)); }
+    if(model->grads_acts_memory != NULL) { memset(model->grads_acts_memory, 0, model->num_activations * sizeof(float)); }
 }
 
 // -----------------------------------------------------------------------------
@@ -431,29 +441,27 @@ typedef struct {
     MLP *model;
 } AdamW;
 
-AdamW* adamw_init(AdamW* optimizer, MLP *model, float lr, float beta1, float beta2, float weight_decay, float eps) {
+AdamW* adamw_init(AdamW* optimizer, size_t num_parameters, float lr, float beta1, float beta2, float weight_decay, float eps) {
     optimizer->lr = lr;
     optimizer->beta1 = beta1;
     optimizer->beta2 = beta2;
     optimizer->weight_decay = weight_decay;
     optimizer->eps = eps;
     optimizer->t = 0;  // timestep - used for bias correction
-    optimizer->m = (float*)callocCheck(model->num_parameters, sizeof(float));
-    optimizer->v = (float*)callocCheck(model->num_parameters, sizeof(float));
-    optimizer->model = model;
+    optimizer->m = (float*)callocCheck(num_parameters, sizeof(float));
+    optimizer->v = (float*)callocCheck(num_parameters, sizeof(float));
 }
 
-void adamw_step(AdamW *optimizer, MLP* model) {
+void update(AdamW *optimizer, MLP* model) {
     optimizer->t += 1;
+    float *grads = model->grads_memory;
+    float *params = model->params_memory;
     for (int i = 0; i < model->num_parameters; i++) {
         optimizer->m[i] = optimizer->beta1 * optimizer->m[i] + (1 - optimizer->beta1) * grads[i];
         optimizer->v[i] = optimizer->beta2 * optimizer->v[i] + (1 - optimizer->beta2) * grads[i] * grads[i];
         float m_hat = optimizer->m[i] / (1 - pow(optimizer->beta1, optimizer->t));
         float v_hat = optimizer->v[i] / (1 - pow(optimizer->beta2, optimizer->t));
-        optimizer->model->wte[i] -= optimizer->lr * m_hat / (sqrt(v_hat) + optimizer->eps);
-        if (optimizer->weight_decay > 0) {
-            optimizer->model->wte[i] -= optimizer->lr * optimizer->weight_decay * optimizer->model->wte[i];
-        }
+        params[i] -= optimizer->lr * (m_hat / (sqrt(v_hat) + optimizer->eps) + optimizer->weight_decay * params[i]);
     }
 }
 
@@ -523,6 +531,7 @@ int main() {
     int TRAIN_SIZE = 213796;
     int VAL_SIZE = 7179;
     int TEST_SIZE = 7170;
+
     int train_tokens[TRAIN_SIZE];
     int val_tokens[VAL_SIZE];
     int test_tokens[TEST_SIZE];
@@ -562,7 +571,7 @@ int main() {
     float beta1 = 0.9;
     float beta2 = 0.999;
     float eps = 1e-8;
-    adamw_init(&optimizer, &model, learning_rate, beta1, beta2, weight_decay, eps);
+    adamw_init(&optimizer, model.num_parameters, learning_rate, beta1, beta2, weight_decay, eps);
 
     // training loop
     int batch_size = 64;
@@ -584,15 +593,17 @@ int main() {
         dataloader(&model, train_tokens, context_length, batch_size, train_token_count);
         // forward through the model
         float loss = forward(&model);
-        // backpropagate
+        // zero out the gradients
+        zero_grad(&model);
+        // compute the gradients
         backward(&model);
-        // step the optimizer - update the weights
-        adamw_step(optimizer, grads, sizeof(grads) / sizeof(grads[0]));
-        // TODO: zero grad buffers
+        // update the weights
+        update(&optimizer, &model);
     }
 
-    // TODO: free up all the memory
-    adam_free(&optimizer);
+    // free all dynamically allocated memory
     mlp_free(&model);
+    adam_free(&optimizer);
+
     return 0;
 }
