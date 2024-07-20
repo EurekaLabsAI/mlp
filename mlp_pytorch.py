@@ -21,14 +21,21 @@ class MLP(nn.Module):
     Bengio et al. 2003 https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
     """
 
-    def __init__(self, vocab_size, context_length, embedding_size, hidden_size):
+    def __init__(self, vocab_size, context_length, embedding_size, hidden_size, rand):
         super().__init__()
         self.wte = nn.Embedding(vocab_size, embedding_size) # token embedding table
+        self.wte.weight = torch.nn.Parameter(torch.from_numpy(rand.random_array(vocab_size, embedding_size).astype('float32')), requires_grad=True)
+        L1 = nn.Linear(context_length * embedding_size, hidden_size)
+        L1.weight = torch.nn.Parameter(torch.from_numpy(rand.random_array(hidden_size, context_length * embedding_size ).astype('float32')), requires_grad=True)
+        L1.bias   = torch.nn.Parameter(torch.from_numpy(rand.random_array(1,hidden_size)))
+        L2 = nn.Linear(hidden_size, vocab_size)
+        L2.weight = torch.nn.Parameter(torch.from_numpy(rand.random_array(vocab_size, hidden_size).astype('float32')), requires_grad=True)
+        L2.bias   = torch.nn.Parameter(torch.from_numpy(rand.random_array(1,vocab_size)))
         self.mlp = nn.Sequential(
-            nn.Linear(context_length * embedding_size, hidden_size),
+            L1,
             nn.Tanh(),
             nn.GELU(),
-            nn.Linear(hidden_size, vocab_size)
+            L2
         )
 
     def forward(self, idx, targets=None):
@@ -111,7 +118,7 @@ if __name__ == "__main__":
     context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
     embedding_size = 24
     hidden_size = 512
-    model = MLP(vocab_size, context_length, embedding_size, hidden_size)
+    model = MLP(vocab_size, context_length, embedding_size, hidden_size, random)
 
     # create the optimizer
     learning_rate = 1e-3

@@ -3,6 +3,7 @@
 # -----------------------------------------------------------------------------
 # random number generation
 
+import numpy as np
 # class that mimics the random interface in Python, fully deterministic,
 # and in a way that we also control fully, and can also use in C, etc.
 class RNG:
@@ -21,3 +22,10 @@ class RNG:
     def random(self):
         # random float32 in [0, 1)
         return (self.random_u32() >> 8) / 16777216.0
+
+    def random_array(self, m, n):
+        array = np.zeros((m, n), dtype=np.float32)
+        flat_array = array.ravel()
+        for i in range(m * n):
+            flat_array[i] = self.random()
+        return array
