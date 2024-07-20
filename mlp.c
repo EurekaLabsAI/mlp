@@ -400,19 +400,19 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
     }
 }
 
-void relu_backward(float* grad_x, float* grad_y, float* x, int size) {
+void relu_backward(float* dinp, float* dout, float* inp, int size) {
     for (int i = 0; i < size; i++) {
-        grad_x[i] = grad_y[i] * (x[i] > 0);
+        dinp[i] = dout[i] * (inp[i] > 0);
     }
 }
 
-void encoder_backward(float* dwte,
+void encoder_backward(float* dinp,
                       float* dout, int* inp,
                       int B, int T, int C) {
     for (int b = 0; b < B; b++) {
         for (int t = 0; t < T; t++) {
             for (int i = 0; i < C; i++) {
-                dwte[inp[b*T + t]*C + i] += dout[b*T*C + t*C + i];
+                dinp[inp[b*T + t]*C + i] += dout[b*T*C + t*C + i];
             }
         }
     }
