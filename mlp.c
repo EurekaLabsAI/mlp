@@ -259,7 +259,8 @@ void encoder_forward(float *act_emb, int *inputs, float *weight_wte, int B, int 
 }
 
 void matmul_forward(float *c, float *a, float *b, float *bias, int m, int n, int k) {
-    // C = A * B + bias; (m, k) = (m, n) * (n, k) + (k,)
+    // C = A * B + bias;
+    // shapes: (m, k) = (m, n) * (n, k) + (k,); note: (k,) is broadcasted to (m, k)
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < k; j++) {
             c[i*k + j] = 0;
@@ -267,7 +268,7 @@ void matmul_forward(float *c, float *a, float *b, float *bias, int m, int n, int
                 c[i*k + j] += a[i*n + l] * b[l*k + j];
             }
 
-            // bias
+            // add bias
             c[i*k + j] += bias[j];
         }
     }
@@ -346,11 +347,11 @@ float forward(MLP *model) {
     encoder_forward(acts.emb, model->inputs, params.wte, B, T, E);
 
     // forward through the first linear layer
-    matmul_forward(acts.h, acts.emb, params.fc1_weights, params.fc1_bias, B, T * E, H);  // (B, T*E) * (T*E, H) = (B, H)
+    matmul_forward(acts.h, acts.emb, params.fc1_weights, params.fc1_bias, B, T * E, H);  // (B, T*E) @ (T*E, H) = (B, H)
     relu_forward(acts.h, B * H);
 
     // forward through the second linear layer
-    matmul_forward(acts.logits, acts.h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) * (H, V) = (B, V)
+    matmul_forward(acts.logits, acts.h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) @ (H, V) = (B, V)
     softmax_forward(acts.probs, acts.logits, B, V);
 
     float loss = cross_entropy(acts.probs, model->targets, B, V);
@@ -371,34 +372,30 @@ void crossentropy_softmax_backward(float* grad_logits, float* act_probs, int* ta
     }
 }
 
+// simplest possible matmul backward
 void matmul_backward(float* dinp, float* dweight, float* dbias,
                      const float* dout, const float* inp, const float* weight,
                      int B, int C, int OC) {
-    // TODO: make sure this works
-    // TODO: refactor
-    // backward into inp first
+    // backward into input
     for (int b = 0; b < B; b++) {
-        const float* dout_b = dout + b * OC;
-        float* dinp_b = dinp + b * C;
-        for (int o = 0; o < OC; o++) {
-            const float* wrow = weight + o*C;
-            float d = dout_b[o];
-            for (int i = 0; i < C; i++) {
-                dinp_b[i] += wrow[i] * d;
+        for (int i = 0; i < C; i++) {
+            for (int o = 0; o < OC; o++) {
+                dinp[b*C + i] += dout[b*OC + o] * weight[i*OC + o];
             }
         }
     }
-    // backward into weight/bias
+    // backward into weight
+    for (int i = 0; i < C; i++) {
+        for (int o = 0; o < OC; o++) {
+            for (int b = 0; b < B; b++) {
+                dweight[i*OC + o] += inp[b*C + i] * dout[b*OC + o];
+            }
+        }
+    }
+    // backward into bias
     for (int o = 0; o < OC; o++) {
         for (int b = 0; b < B; b++) {
-            const float* dout_b = dout + b * OC;
-            const float* inp_b = inp + b * C;
-            float* dwrow = dweight + o*C;
-            float d = dout_b[o];
-            if (dbias != NULL) { dbias[o] += d; }
-            for (int i = 0; i < C; i++) {
-                dwrow[i] += inp_b[i] * d;
-            }
+            dbias[o] += dout[b*OC + o];
         }
     }
 }
@@ -414,12 +411,8 @@ void encoder_backward(float* dwte,
                       int B, int T, int C) {
     for (int b = 0; b < B; b++) {
         for (int t = 0; t < T; t++) {
-            float* dout_bt = dout + b * T * C + t * C;
-            int ix = inp[b * T + t];
-            float* dwte_ix = dwte + ix * C;
             for (int i = 0; i < C; i++) {
-                float d = dout_bt[i];
-                dwte_ix[i] += d;
+                dwte[inp[b*T + t]*C + i] += dout[b*T*C + t*C + i];
             }
         }
     }
