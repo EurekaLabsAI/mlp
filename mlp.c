@@ -249,11 +249,12 @@ void mlp_free(MLP *model) {
 // -----------------------------------------------------------------------------
 // forward pass
 
-void encoder_forward(float *act_emb, int *inputs, float *wte, int B, int T, int E) {
-    for (int i = 0; i < B; i++) {
-        for (int j = 0; j < T; j++) {
-            int token = inputs[i*T + j];
-            memcpy(&act_emb[(i*T + j)*E], &wte[token*E], E * sizeof(float));
+void encoder_forward(float *act_emb, int *inputs, float *weight_wte, int B, int T, int E) {
+    for (int b = 0; b < B; b++) {
+        for (int t = 0; t < T; t++) {
+            int idx = inputs[b*T + t];
+            // copy the embedding for the token at index idx
+            memcpy(&act_emb[(b*T + t)*E], &weight_wte[idx*E], E * sizeof(float));
         }
     }
 }
@@ -280,32 +281,35 @@ void relu_forward(float *x, int size) {
     }
 }
 
-void softmax(float *probs, float *logits, int size, int batch_size) {
-    for (int i = 0; i < batch_size; i++) {
+void softmax_forward(float *probs, float *logits, int batch_size, int vocab_size) {
+    for (int b = 0; b < batch_size; b++) {
         float max_val = -INFINITY;
-        for (int j = 0; j < size; j++) {
-            if (logits[i*size + j] > max_val) {
-                max_val = logits[i*size + j];
+        // find the max value for this sample in the batch - this is to avoid numerical instability
+        for (int j = 0; j < vocab_size; j++) {
+            if (logits[b*vocab_size + j] > max_val) {
+                max_val = logits[b*vocab_size + j];
             }
         }
-        float sum = 0;
-        for (int j = 0; j < size; j++) {
-            probs[i*size + j] = exp(logits[i*size + j] - max_val);
-            sum += probs[i*size + j];
+        float sum = 0.0f;
+        // compute the unnormalized probabilities and softmax denominator
+        for (int j = 0; j < vocab_size; j++) {
+            probs[b*vocab_size + j] = expf(logits[b*vocab_size + j] - max_val);
+            sum += probs[b*vocab_size + j];
         }
-        for (int j = 0; j < size; j++) {
-            probs[i*size + j] /= sum;
+        // normalize the probabilities
+        for (int j = 0; j < vocab_size; j++) {
+            probs[b*vocab_size + j] /= sum;
         }
     }
 }
 
-float cross_entropy(float *probs, int *targets, int vocab_size, int batch_size) {
-    float loss = 0;
+float cross_entropy(float *probs, int *targets, int batch_size, int vocab_size) {
+    double loss = 0;
     for (int i = 0; i < batch_size; i++) {
         int target = targets[i];
-        loss += -log(probs[i*vocab_size + target]);
+        loss += -logf(probs[i*vocab_size + target]);
     }
-    return loss / batch_size;
+    return (float)(loss / (double)batch_size);
 }
 
 float forward(MLP *model) {
@@ -322,10 +326,10 @@ float forward(MLP *model) {
     int E = model->config.embedding_size;
     int H = model->config.hidden_size;
     int V = model->config.vocab_size;
+    ParameterTensors params = model->params;
+    ActivationTensors acts = model->acts;
 
     if (model->acts_memory == NULL) {  // lazy initialization of activations the first time we call forward
-
-        // allocate space for all the activations and read them in
         fill_in_activation_sizes(model->act_sizes, model->config);
 
         size_t num_activations = 0;
@@ -338,11 +342,8 @@ float forward(MLP *model) {
         model->acts_memory = malloc_and_point_activations(&model->acts, model->act_sizes, num_activations);
     }
 
-    ParameterTensors params = model->params; // for brevity
-    ActivationTensors acts = model->acts;
-
     // encode all the tokens using the embedding table
-    // inputs are the input tokens, (B, T) array of integers
+    // inputs are the input tokens, a (B, T) array of integers
     encoder_forward(acts.emb, model->inputs, params.wte, B, T, E);
 
     // forward through the first linear layer
@@ -351,9 +352,9 @@ float forward(MLP *model) {
 
     // forward through the second linear layer
     matmul_forward(acts.logits, acts.h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) * (H, V) = (B, V)
-    softmax(acts.probs, acts.logits, V, B);
+    softmax_forward(acts.probs, acts.logits, B, V);
 
-    float loss = cross_entropy(acts.probs, model->targets, V, B);
+    float loss = cross_entropy(acts.probs, model->targets, B, V);
     return loss;
 }
 
