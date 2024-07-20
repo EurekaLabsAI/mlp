@@ -93,14 +93,14 @@ extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, in
 // MLP model
 
 typedef struct {
-    size_t vocab_size;
-    size_t context_length;
-    size_t embedding_size;
-    size_t hidden_size;
-    size_t batch_size;
+    size_t vocab_size;  // (V) number of tokens in the vocabulary
+    size_t context_length;  // (T) number of tokens in the context, e.g. 4 means 4-gram passed as input
+    size_t embedding_size;  // (E) size of the token embeddings
+    size_t hidden_size;  // (H) size of MLP the hidden layer
+    size_t batch_size;  // (B) batch size
 } MLPConfig;
 
-// TODO: see whether shapes are correct
+// TODO: see whether fc1_weights & fc2_weights shapes are correct or perhaps they should be transposed?
 #define NUM_PARAMETER_TENSORS 5
 typedef struct {
     float *wte;  // (V, E)
@@ -125,11 +125,11 @@ void fill_in_parameter_sizes(size_t* param_sizes, MLPConfig config) {
     param_sizes[4] = V;
 }
 
-// allocate memory for the parameters and point the individual tensors to the right places
+// allocate memory for the parameters and point the individual pointers to the right locations
 float* malloc_and_point_parameters(ParameterTensors* params, size_t* param_sizes, size_t num_parameters) {
     // malloc all parameters all at once
     float* params_memory = (float*)mallocCheck(num_parameters * sizeof(float));
-    // assign all the tensors
+    // assign all the pointers to the right locations
     float** ptrs[] = {
         &params->wte, &params->fc1_weights, &params->fc1_bias, &params->fc2_weights, &params->fc2_bias
     };
@@ -165,6 +165,7 @@ void fill_in_activation_sizes(size_t* act_sizes, MLPConfig config) {
     act_sizes[4] = B * V;
 }
 
+// allocate memory for the activations and point the individual pointers to the right locations
 float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes, size_t num_activations) {
     float* acts_memory = (float*)mallocCheck(num_activations * sizeof(float));
     float** ptrs[] = {
@@ -178,7 +179,6 @@ float* malloc_and_point_activations(ActivationTensors* acts, size_t* act_sizes, 
     return acts_memory;
 }
 
-// Define the structure for the MLP
 typedef struct {
     MLPConfig config;
     // parameters
@@ -201,7 +201,7 @@ typedef struct {
     int* targets; // the target tokens for the current forward pass
 } MLP;
 
-MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
+void mlp_build_from_checkpoint(MLP *model, const char *filename) {
     // read in model from a checkpoint file
     FILE *model_file = fopenCheck(filename, "rb");
     int model_header[256];
@@ -215,10 +215,10 @@ MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
     model->config.embedding_size = E = model_header[3];
     model->config.hidden_size = H = model_header[4];
     printf("[MLP]\n");
-    printf("vocab_size: %d\n", V);
-    printf("context_length: %d\n", T);
-    printf("embedding_size: %d\n", E);
-    printf("hidden_size: %d\n", H);
+    printf("vocab_size: %zu\n", V);
+    printf("context_length: %zu\n", T);
+    printf("embedding_size: %zu\n", E);
+    printf("hidden_size: %zu\n", H);
 
     // allocate space for all the parameters and read them in
     fill_in_parameter_sizes(model->param_sizes, model->config);
@@ -231,10 +231,9 @@ MLP* mlp_build_from_checkpoint(MLP *model, const char *filename) {
     printf("num_parameters: %zu\n", num_parameters);
     model->num_parameters = num_parameters;
 
-    // read in all the parameters from file
     model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes, num_parameters);
+    // read in all the parameters from file
     freadCheck(model->params_memory, sizeof(float), num_parameters, model_file);
-
     fcloseCheck(model_file);
 }
 
@@ -327,7 +326,7 @@ float forward(MLP *model) {
     if (model->acts_memory == NULL) {  // lazy initialization of activations the first time we call forward
 
         // allocate space for all the activations and read them in
-        fill_in_activation_sizes(model->act_sizes, B, T, E, H, V);
+        fill_in_activation_sizes(model->act_sizes, model->config);
 
         size_t num_activations = 0;
         for (size_t i = 0; i < NUM_ACTIVATION_TENSORS; i++) {
@@ -469,32 +468,33 @@ void zero_grad(MLP *model) {
 // AdamW optimizer
 
 typedef struct {
-    float lr;
-    float beta1;
-    float beta2;
-    float weight_decay;
-    float eps;
-    int t;
-    float *m;
-    float *v;
-    MLP *model;
+    float lr;  // learning rate
+    float beta1;  // exponential decay rate for the first moment estimates
+    float beta2;  // exponential decay rate for the second moment estimates
+    float weight_decay;  // weight decay (L2 penalty)
+    float eps;  // a small constant to avoid division by zero
+    int t;  // timestep - used for bias correction
+    float *m;  // first moment estimates
+    float *v;  // second moment estimates
 } AdamW;
 
-AdamW* adamw_init(AdamW* optimizer, size_t num_parameters, float lr, float beta1, float beta2, float weight_decay, float eps) {
+void adamw_init(AdamW* optimizer, size_t num_parameters, float lr, float beta1, float beta2, float weight_decay, float eps) {
     optimizer->lr = lr;
     optimizer->beta1 = beta1;
     optimizer->beta2 = beta2;
     optimizer->weight_decay = weight_decay;
     optimizer->eps = eps;
-    optimizer->t = 0;  // timestep - used for bias correction
+    optimizer->t = 0;
     optimizer->m = (float*)callocCheck(num_parameters, sizeof(float));
     optimizer->v = (float*)callocCheck(num_parameters, sizeof(float));
 }
 
 void update(AdamW *optimizer, MLP* model) {
-    optimizer->t += 1;
+    // convenience shortcuts
     float *grads = model->grads_memory;
     float *params = model->params_memory;
+
+    optimizer->t += 1;
     for (int i = 0; i < model->num_parameters; i++) {
         optimizer->m[i] = optimizer->beta1 * optimizer->m[i] + (1 - optimizer->beta1) * grads[i];
         optimizer->v[i] = optimizer->beta2 * optimizer->v[i] + (1 - optimizer->beta2) * grads[i] * grads[i];
@@ -537,9 +537,9 @@ void dataloader(MLP* model, int *tokens, int context_length, int batch_size, int
 float eval_split(MLP *model, int *tokens, int token_cnt, int max_batches, int batch_size) {
     float total_loss = 0;
     int num_batches = token_cnt / batch_size;
-    num_batches = max_batches ? min(num_batches, max_batches) : num_batches;
+    num_batches = max_batches ? (num_batches < max_batches ? num_batches : max_batches) : num_batches;
     for (int i = 0; i < num_batches; i++) {
-        dataloader(&model, tokens, model->config.context_length, batch_size, token_cnt);
+        dataloader(model, tokens, model->config.context_length, batch_size, token_cnt);
         float loss = forward(model);
         total_loss += loss;
     }
