@@ -46,6 +46,35 @@ class MLP(nn.Module):
             loss = F.cross_entropy(logits, targets)
         return logits, loss
 
+    @torch.no_grad()
+    def reinit(self, rng):
+        # This function is a bit of a hack and would not be present in
+        # typical PyTorch code. Basically:
+        # - we want to use our own RNG to initialize the weights.
+        # - but we don't want to change idiomatic PyTorch code (above).
+        # So here in this function we overwrite the weights using our own RNG.
+        # This ensures that we have full control over the initialization and
+        # can easily compare the results with other implementations.
+
+        def reinit_tensor_randn(w, mu, sigma):
+            winit = torch.tensor(rng.randn(w.numel(), mu=mu, sigma=sigma))
+            w.copy_(winit.view_as(w))
+
+        def reinit_tensor_rand(w, a, b):
+            winit = torch.tensor(rng.rand(w.numel(), a=a, b=b))
+            w.copy_(winit.view_as(w))
+
+        # Let's match the PyTorch default initialization:
+        # Embedding with N(0,1)
+        reinit_tensor_randn(self.wte.weight, mu=0, sigma=1.0)
+        # Linear (both W,b) with U(-K, K) where K = 1/sqrt(fan_in)
+        scale = (self.mlp[0].in_features)**-0.5
+        reinit_tensor_rand(self.mlp[0].weight, -scale, scale)
+        reinit_tensor_rand(self.mlp[0].bias, -scale, scale)
+        scale = (self.mlp[2].in_features)**-0.5
+        reinit_tensor_rand(self.mlp[2].weight, -scale, scale)
+        reinit_tensor_rand(self.mlp[2].bias, -scale, scale)
+
 # -----------------------------------------------------------------------------
 # simple DataLoader that iterates over all the n-grams
 
@@ -88,9 +117,7 @@ def eval_split(model, tokens, max_batches=None):
 
 # -----------------------------------------------------------------------------
 # let's train!
-
 random = RNG(1337)
-# TODO: actually use this rng for the model initialization
 
 # "train" the Tokenizer, so we're able to map between characters and tokens
 train_text = open('data/train.txt', 'r').read()
@@ -110,6 +137,7 @@ context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
 embedding_size = 24
 hidden_size = 512
 model = MLP(vocab_size, context_length, embedding_size, hidden_size)
+model.reinit(random) # reinitialize the model with our own RNG
 
 # create the optimizer
 learning_rate = 1e-3
