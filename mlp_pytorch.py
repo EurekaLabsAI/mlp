@@ -100,6 +100,7 @@ def dataloader(tokens, context_length, batch_size):
 # -----------------------------------------------------------------------------
 # evaluation function
 
+@torch.inference_mode()
 def eval_split(model, tokens, max_batches=None):
     # calculate the loss on the given tokens
     model.eval()
