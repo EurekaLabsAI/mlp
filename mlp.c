@@ -4,7 +4,7 @@
 #include <string.h>
 
 // -----------------------------------------------------------------------------
-// Helper functions
+// Helper wrapper functions
 
 extern inline FILE *fopen_check(const char *path, const char *mode, const char *file, int line) {
     FILE *fp = fopen(path, mode);
@@ -15,8 +15,6 @@ extern inline FILE *fopen_check(const char *path, const char *mode, const char *
         fprintf(stderr, "  Line: %d\n", line);
         fprintf(stderr, "  Path: %s\n", path);
         fprintf(stderr, "  Mode: %s\n", mode);
-        fprintf(stderr, "---> HINT 1: dataset files/code have moved to dev/data recently (May 20, 2024). You may have to mv them from the legacy data/ dir to dev/data/(dataset), or re-run the data preprocessing script. Refer back to the main README\n");
-        fprintf(stderr, "---> HINT 2: possibly try to re-run `python train_gpt2.py`\n");
         exit(EXIT_FAILURE);
     }
     return fp;
@@ -90,6 +88,26 @@ extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, in
 
 // -----------------------------------------------------------------------------
 // MLP model
+
+// Pictorial representation of the model for:
+// batch size 1 (B=1), 4-gram input (T=4), vocab size 3 (V=1), embedding size 2 (E=2), hidden size 4 (H=4)
+
+// [[c1, c2, c3, c4]] | shape: (1, 4)
+//   |   |   |   |
+//   v   v   v   v (lookup in wte)
+// [[[e11, e12], [e21, e22], [e31, e32], [e41, e42]]] | shape: (1, 4, 2)
+//   |   |   |   |
+//   v   v   v   v (reshape to (1, 8))
+// [[e11, e12, e21, e22, e31, e32, e41, e42]] | shape: (1, 8)
+//   |   |   |   |
+//   v   v   v   v (matmul with fc1_weights, add fc1_bias, relu)
+// [[h1, h2, h3, h4]] | shape: (1, 4)
+//   |   |   |   |
+//   v   v   v   v (matmul with fc2_weights, add fc2_bias)
+// [[l1, l2, l3]] | shape: (1, 3)
+//   |   |   |
+//   v   v   v (softmax)
+// [[p1, p2, p3]] | shape: (1, 3)
 
 typedef struct {
     size_t vocab_size;  // (V) number of tokens in the vocabulary
@@ -236,6 +254,7 @@ void mlp_build_from_checkpoint(MLP *model, const char *filename) {
 }
 
 void mlp_free(MLP *model) {
+    // free up all dynamically allocated memory
     free(model->params_memory);
     free(model->acts_memory);
     free(model->grads_memory);
@@ -251,7 +270,7 @@ void encoder_forward(float *act_emb, int *inputs, float *weight_wte, int B, int 
     for (int b = 0; b < B; b++) {
         for (int t = 0; t < T; t++) {
             int idx = inputs[b*T + t];
-            // copy the embedding for the token at index idx
+            // copy the embedding vector of size E for the token at index idx
             memcpy(&act_emb[(b*T + t)*E], &weight_wte[idx*E], E * sizeof(float));
         }
     }
@@ -263,6 +282,7 @@ void matmul_forward(float *c, float *a, float *b, float *bias, int m, int n, int
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < k; j++) {
             c[i*k + j] = 0;
+            // dot product of row i of A and column j of B
             for (int l = 0; l < n; l++) {
                 c[i*k + j] += a[i*n + l] * b[l*k + j];
             }
@@ -343,17 +363,17 @@ float forward(MLP *model) {
 
     // encode all the tokens using the embedding table
     // inputs are the input tokens, a (B, T) array of integers
-    encoder_forward(acts.emb, model->inputs, params.wte, B, T, E);
+    encoder_forward(acts.emb, model->inputs, params.wte, B, T, E);  // (B, T) -> (B, T, E)
 
     // forward through the first linear layer
     matmul_forward(acts.h, acts.emb, params.fc1_weights, params.fc1_bias, B, T * E, H);  // (B, T*E) @ (T*E, H) = (B, H)
-    relu_forward(acts.h, B * H);
+    relu_forward(acts.h, B * H);  // (B, H)
 
     // forward through the second linear layer
     matmul_forward(acts.logits, acts.h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) @ (H, V) = (B, V)
-    softmax_forward(acts.probs, acts.logits, B, V);
+    softmax_forward(acts.probs, acts.logits, B, V);  // (B, V)
 
-    float loss = cross_entropy(acts.probs, model->targets, B, V);
+    float loss = cross_entropy(acts.probs, model->targets, B, V);  // scalar
     return loss;
 }
 
@@ -366,12 +386,12 @@ void crossentropy_softmax_backward(float* grad_logits, float* act_probs, int* ta
         for (int i = 0; i < V; i++) {
             float p = act_probs[b*V + i];
             float indicator = i == targets[b] ? 1.0f : 0.0f;
-            grad_logits[b*V + i] += (p - indicator) * (1.f / B);
+            grad_logits[b*V + i] += (p - indicator) * (1.f / B);  // divide by B as the loss is a mean over the batch
         }
     }
 }
 
-// simplest possible matmul backward
+// simplest possible matmul backward, can be further optimized with pragma directives, etc.
 void matmul_backward(float* dinp, float* dweight, float* dbias,
                      const float* dout, const float* inp, const float* weight,
                      int B, int C, int OC) {
@@ -381,6 +401,7 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
             for (int o = 0; o < OC; o++) {
                 // dinp = dout @ weight^T
                 // (B,C) = (B,OC) @ (OC,C)
+                // weight's layout is (C,OC) but here we transpose it using i*OC + o
                 dinp[b*C + i] += dout[b*OC + o] * weight[i*OC + o];
             }
         }
@@ -391,6 +412,7 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
             for (int b = 0; b < B; b++) {
                 // dweight = inp^T @ dout
                 // (C,OC) = (C,B) @ (B,OC)
+                // inp's layout is (B,C) but here we transpose it using b*C + i
                 dweight[i*OC + o] += inp[b*C + i] * dout[b*OC + o];
             }
         }
@@ -439,6 +461,7 @@ void backward(MLP *model) {
     ActivationTensors acts = model->acts;
     ActivationTensors grads_acts = model->grads_acts;
 
+    // backprop through softmax and crossentropy
     crossentropy_softmax_backward(grads_acts.logits, acts.probs, model->targets, B, V);
 
     // backprop through the second linear layer
@@ -493,15 +516,16 @@ void update(AdamW *optimizer, MLP* model) {
 
     optimizer->t += 1;
     for (int i = 0; i < model->num_parameters; i++) {
-        optimizer->m[i] = optimizer->beta1 * optimizer->m[i] + (1 - optimizer->beta1) * grads[i];
-        optimizer->v[i] = optimizer->beta2 * optimizer->v[i] + (1 - optimizer->beta2) * grads[i] * grads[i];
-        float m_hat = optimizer->m[i] / (1 - pow(optimizer->beta1, optimizer->t));
-        float v_hat = optimizer->v[i] / (1 - pow(optimizer->beta2, optimizer->t));
-        params[i] -= optimizer->lr * (m_hat / (sqrt(v_hat) + optimizer->eps) + optimizer->weight_decay * params[i]);
+        optimizer->m[i] = optimizer->beta1 * optimizer->m[i] + (1 - optimizer->beta1) * grads[i];  // exponential moving average of the gradient (momentum)
+        optimizer->v[i] = optimizer->beta2 * optimizer->v[i] + (1 - optimizer->beta2) * grads[i] * grads[i];  // exponential moving average of the squared gradient (uncentered variance)
+        float m_hat = optimizer->m[i] / (1 - pow(optimizer->beta1, optimizer->t));  // bias correction
+        float v_hat = optimizer->v[i] / (1 - pow(optimizer->beta2, optimizer->t));  // bias correction
+        params[i] -= optimizer->lr * (m_hat / (sqrt(v_hat) + optimizer->eps) + optimizer->weight_decay * params[i]);  // update with weight decay
     }
 }
 
 void adam_free(AdamW *optimizer) {
+    // free up all dynamically allocated memory
     free(optimizer->m);
     free(optimizer->v);
 }
@@ -598,8 +622,8 @@ int main() {
     mlp_build_from_checkpoint(&model, "mlp_weights.bin");
 
     // optimizer
-    float learning_rate = 1e-3;
     AdamW optimizer;
+    float learning_rate = 1e-3;
     float weight_decay = 1e-4;
     float beta1 = 0.9;
     float beta2 = 0.999;
@@ -622,12 +646,11 @@ int main() {
             float val_loss = eval_split(&model, val_tokens, val_token_count, 0, batch_size);
             printf("step %d/%d | train_loss %.4f | val_loss %.4f | lr %.6f\n", step, num_steps, train_loss, val_loss, lr);
         }
-
         // get the next batch of training data
         dataloader(&model, train_tokens, model.config.context_length, batch_size, train_token_count, &pos);
         // forward through the model
         float loss = forward(&model);
-        // zero out the gradients
+        // zero out the gradients so we know we have the right gradient state just before the backward pass
         zero_grad(&model);
         // compute the gradients
         backward(&model);
