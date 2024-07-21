@@ -92,6 +92,9 @@ extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, in
 
 // Box-Muller transform function
 void box_muller_transform(float u1, float u2, float *z1, float *z2) {
+    // This is using the Basic form of the Box-Muller transform
+    // u1 and u2 are simple floats in [0, 1)
+    // z1 and z2 are standard normal random variables
     float r = sqrtf(-2.0f * logf(u1));
     float theta = 2.0f * M_PI * u2;
     *z1 = r * cosf(theta);
@@ -274,11 +277,15 @@ typedef struct {
 } MLP;
 
 void mlp_random_init(MLP *model, RNG *rng) {
+    size_t V = model->config.vocab_size;
+    size_t T = model->config.context_length;
+    size_t E = model->config.embedding_size;
+    size_t H = model->config.hidden_size;
     printf("[MLP]\n");
-    printf("vocab_size: %zu\n", model->config.vocab_size);
-    printf("context_length: %zu\n", model->config.context_length);
-    printf("embedding_size: %zu\n", model->config.embedding_size);
-    printf("hidden_size: %zu\n", model->config.hidden_size);
+    printf("vocab_size: %zu\n", V);
+    printf("context_length: %zu\n", T);
+    printf("embedding_size: %zu\n", E);
+    printf("hidden_size: %zu\n", H);
     fill_in_parameter_sizes(model->param_sizes, model->config);
 
     // count the number of parameters
@@ -294,13 +301,33 @@ void mlp_random_init(MLP *model, RNG *rng) {
     // Let's match the PyTorch default initialization:
     // Embedding with N(0,1)
     rng_randn(rng, model->param_sizes[0], 0.0f, 1.0f, model->params.wte);
+
     // Linear (both W,b) with U(-K, K) where K = 1/sqrt(fan_in)
-    float k1 = 1.0f / sqrtf(model->config.embedding_size * model->config.context_length);
-    rng_rand(rng, model->param_sizes[1], -k1, k1, model->params.fc1_weights);
+    // we need (T*E, H) in order to keep equivalency with PyTorch but we have (H, T*E)
+    // let's transpose the weights in fc1_weights
+    float tmp_buffer[E * T * H];
+    float k1 = 1.0f / sqrtf(E * T);
+    rng_rand(rng, model->param_sizes[1], -k1, k1, tmp_buffer);
+    // set fc1_weights as transposed tmp_buffer (both are row-major)
+    for (size_t i = 0; i < T * E; i++) {
+        for (size_t j = 0; j < H; j++) {
+            model->params.fc1_weights[i * H + j] = tmp_buffer[j * T * E + i];
+        }
+    }
     rng_rand(rng, model->param_sizes[2], -k1, k1, model->params.fc1_bias);
+
+    float tmp_buffer2[H * V];
     float k2 = 1.0f / sqrtf(model->config.hidden_size);
-    rng_rand(rng, model->param_sizes[3], -k2, k2, model->params.fc2_weights);
+    rng_rand(rng, model->param_sizes[3], -k2, k2, tmp_buffer2);
+    // set fc2_weights as transposed tmp_buffer2 (both are row-major)
+    for (size_t i = 0; i < H; i++) {
+        for (size_t j = 0; j < V; j++) {
+            model->params.fc2_weights[i * V + j] = tmp_buffer2[j * H + i];
+        }
+    }
     rng_rand(rng, model->param_sizes[4], -k2, k2, model->params.fc2_bias);
+
+    printf("Initialized model parameters.\n");
 }
 
 void mlp_free(MLP *model) {
