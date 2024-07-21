@@ -27,7 +27,6 @@ class MLP(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(context_length * embedding_size, hidden_size),
             nn.Tanh(),
-            nn.GELU(),
             nn.Linear(hidden_size, vocab_size)
         )
 
