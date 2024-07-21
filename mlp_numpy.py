@@ -4,6 +4,8 @@ Implements a simple n-gram language model in NumPy.
 import math
 import numpy as np
 
+from common import RNG
+
 # -----------------------------------------------------------------------------
 # The NumPy Module
 
@@ -16,32 +18,23 @@ class MLP:
     Bengio et al. 2003 https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
     """
 
-    def __init__(self, filename="mlp_weights.bin"):
-        with open(filename, "rb") as file:
-            header = np.frombuffer(file.read(256 * 4), dtype=np.int32)
-            assert header[0] == 20240719
-            self.vocab_size = header[1]
-            self.context_length = header[2]
-            self.embedding_size = header[3]
-            self.hidden_size = header[4]
+    def __init__(self, random: RNG, vocab_size, context_length, embedding_size, hidden_size):
+        v, t, e, h = vocab_size, context_length, embedding_size, hidden_size
+        self.E = e
 
-            def read_fun(shape, file):
-                array = np.frombuffer(file.read(np.prod(shape) * 4), dtype=np.float32).reshape(shape)
-                return array.copy()
-
-            self.wte = read_fun((self.vocab_size, self.embedding_size), file)
-            self.fc1_weights = read_fun((self.embedding_size * self.context_length, self.hidden_size), file)
-            self.fc1_bias = read_fun((self.hidden_size,), file)
-            self.fc2_weights = read_fun((self.hidden_size, self.vocab_size), file)
-            self.fc2_bias = read_fun((self.vocab_size,), file)
+        # initialize the weights the same way PyTorch does
+        self.wte = np.asarray(random.randn(v * e, mu=0, sigma=1.0)).reshape(v, e)
+        scale = 1 / math.sqrt(e * t)
+        self.fc1_weights = np.asarray(random.rand(t * e * h, -scale, scale)).reshape(h, t * e).T
+        self.fc1_bias = np.asarray(random.rand(h, -scale, scale))
+        scale = 1 / math.sqrt(h)
+        self.fc2_weights = np.asarray(random.rand(h * v, -scale, scale)).reshape(v, h).T
+        self.fc2_bias = np.asarray(random.rand(v, -scale, scale))
 
         self.act_cache = {}  # cache for the activations for the backward pass
 
-    def gelu(self, x):
-        return 0.5 * x * (1 + np.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * np.power(x, 3))))
-
-    def relu(self, x):
-        return np.maximum(x, 0)
+    def tanh(self, x):
+        return np.tanh(x)
 
     def parameters(self):
         return {
@@ -64,7 +57,7 @@ class MLP:
         # concat all of the embeddings together
         emb = emb.reshape(B, -1) # (B, T * embedding_size)
         # forward through the MLP
-        h = self.relu(np.dot(emb, self.fc1_weights) + self.fc1_bias)
+        h = self.tanh(np.dot(emb, self.fc1_weights) + self.fc1_bias)
         logits = np.dot(h, self.fc2_weights) + self.fc2_bias
 
         self.act_cache['idx'] = idx
@@ -101,12 +94,12 @@ class MLP:
         dL_dfc2_bias = np.sum(dL_dlogits, axis=0)
 
         dL_dh = np.dot(dL_dlogits, self.fc2_weights.T)
-        dL_dfc1 = dL_dh * (h > 0)
+        dL_dfc1 = dL_dh * (1 - h ** 2)
 
         dL_dfc1_weights = np.dot(emb.T, dL_dfc1)
         dL_dfc1_bias = np.sum(dL_dfc1, axis=0)
 
-        dL_emb = np.dot(dL_dfc1, self.fc1_weights.T).reshape(B, T, self.embedding_size)
+        dL_emb = np.dot(dL_dfc1, self.fc1_weights.T).reshape(B, T, self.E)
         dL_dwte = np.zeros_like(self.wte)
         for i in range(B):
             for j in range(T):
@@ -185,6 +178,7 @@ def eval_split(model, tokens, max_batches=None):
 
 # -----------------------------------------------------------------------------
 # let's train!
+random = RNG(1337)
 
 # "train" the Tokenizer, so we're able to map between characters and tokens
 train_text = open('data/train.txt', 'r').read()
@@ -200,10 +194,10 @@ val_tokens = [char_to_token[c] for c in open('data/val.txt', 'r').read()]
 train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 
 # create the model
-model = MLP()
-context_length = model.context_length
-embedding_size = model.embedding_size
-hidden_size = model.hidden_size
+context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
+embedding_size = 24
+hidden_size = 512
+model = MLP(random, vocab_size, context_length, embedding_size, hidden_size)
 
 # optimizer
 learning_rate = 1e-3
@@ -231,4 +225,3 @@ for step in range(num_steps):
     grads = model.backward()
     # step the optimizer
     optimizer.step(grads)
-
