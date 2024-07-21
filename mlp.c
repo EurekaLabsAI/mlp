@@ -273,42 +273,6 @@ typedef struct {
     int* targets; // the target tokens for the current forward pass
 } MLP;
 
-void mlp_build_from_checkpoint(MLP *model, const char *filename) {
-    // read in model from a checkpoint file - currenlty not used
-    FILE *model_file = fopenCheck(filename, "rb");
-    int model_header[256];
-    freadCheck(model_header, sizeof(int), 256, model_file);
-    if (model_header[0] != 20240719) { printf("Bad magic model file\n"); exit(1); }
-
-    // read in hyperparameters
-    size_t V, T, E, H;
-    model->config.vocab_size = V = model_header[1];
-    model->config.context_length = T = model_header[2];
-    model->config.embedding_size = E = model_header[3];
-    model->config.hidden_size = H = model_header[4];
-    printf("[MLP]\n");
-    printf("vocab_size: %zu\n", V);
-    printf("context_length: %zu\n", T);
-    printf("embedding_size: %zu\n", E);
-    printf("hidden_size: %zu\n", H);
-
-    // allocate space for all the parameters and read them in
-    fill_in_parameter_sizes(model->param_sizes, model->config);
-
-    // count the number of parameters
-    size_t num_parameters = 0;
-    for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
-        num_parameters += model->param_sizes[i];
-    }
-    printf("num_parameters: %zu\n", num_parameters);
-    model->num_parameters = num_parameters;
-
-    model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes, num_parameters);
-    // read in all the parameters from file
-    freadCheck(model->params_memory, sizeof(float), num_parameters, model_file);
-    fcloseCheck(model_file);
-}
-
 void mlp_random_init(MLP *model, RNG *rng) {
     printf("[MLP]\n");
     printf("vocab_size: %zu\n", model->config.vocab_size);
