@@ -100,7 +100,7 @@ extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, in
 //   v   v   v   v (reshape to (1, 8))
 // [[e11, e12, e21, e22, e31, e32, e41, e42]] | shape: (1, 8)
 //   |   |   |   |
-//   v   v   v   v (matmul with fc1_weights, add fc1_bias, relu)
+//   v   v   v   v (matmul with fc1_weights, add fc1_bias, tanh)
 // [[h1, h2, h3, h4]] | shape: (1, 4)
 //   |   |   |   |
 //   v   v   v   v (matmul with fc2_weights, add fc2_bias)
@@ -293,9 +293,9 @@ void matmul_forward(float *c, float *a, float *b, float *bias, int m, int n, int
     }
 }
 
-void relu_forward(float *x, int size) {
+void tanh_forward(float *x, int size) {
     for (int i = 0; i < size; i++) {
-        if (x[i] < 0) x[i] = 0;
+        x[i] = tanhf(x[i]);
     }
 }
 
@@ -367,7 +367,7 @@ float forward(MLP *model) {
 
     // forward through the first linear layer
     matmul_forward(acts.h, acts.emb, params.fc1_weights, params.fc1_bias, B, T * E, H);  // (B, T*E) @ (T*E, H) = (B, H)
-    relu_forward(acts.h, B * H);  // (B, H)
+    tanh_forward(acts.h, B * H);  // (B, H)
 
     // forward through the second linear layer
     matmul_forward(acts.logits, acts.h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) @ (H, V) = (B, V)
@@ -425,9 +425,9 @@ void matmul_backward(float* dinp, float* dweight, float* dbias,
     }
 }
 
-void relu_backward(float* dinp, float* dout, float* inp, int size) {
+void tanh_backward(float* dinp, float* dout, float* inp, int size) {
     for (int i = 0; i < size; i++) {
-        dinp[i] = dout[i] * (inp[i] > 0);
+        dinp[i] = dout[i] * (1 - inp[i] * inp[i]);
     }
 }
 
@@ -468,8 +468,8 @@ void backward(MLP *model) {
     matmul_backward(grads_acts.h, grads.fc2_weights, grads.fc2_bias,
                     grads_acts.logits, acts.h, params.fc2_weights, B, H, V);
 
-    // backprop through relu
-    relu_backward(grads_acts.fc1, grads_acts.h, acts.h, B * H);
+    // backprop through tanh
+    tanh_backward(grads_acts.fc1, grads_acts.h, acts.h, B * H);
 
     // backprop through the first linear layer
     matmul_backward(grads_acts.emb, grads.fc1_weights, grads.fc1_bias,
