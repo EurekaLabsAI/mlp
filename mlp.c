@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <stdint.h>
 
 // -----------------------------------------------------------------------------
 // Helper wrapper functions
@@ -85,6 +86,61 @@ extern inline void *calloc_check(size_t nmemb, size_t size, const char *file, in
 }
 
 #define callocCheck(nmemb, size) calloc_check(nmemb, size, __FILE__, __LINE__)
+
+// -----------------------------------------------------------------------------
+// Random number utilities
+
+// Box-Muller transform function
+void box_muller_transform(float u1, float u2, float *z1, float *z2) {
+    float r = sqrtf(-2.0f * logf(u1));
+    float theta = 2.0f * M_PI * u2;
+    *z1 = r * cosf(theta);
+    *z2 = r * sinf(theta);
+}
+
+// RNG class equivalent
+typedef struct {
+    uint64_t state;
+} RNG;
+
+void rng_init(RNG *rng, uint64_t seed) {
+    rng->state = seed;
+}
+
+uint32_t rng_random_u32(RNG *rng) {
+    // xorshift rng: https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
+    rng->state ^= (rng->state >> 12);
+    rng->state ^= (rng->state << 25);
+    rng->state ^= (rng->state >> 27);
+    return ((rng->state * 0x2545F4914F6CDD1D) >> 32) & 0xFFFFFFFF;
+}
+
+float rng_random(RNG *rng) {
+    // random float32 from Uniform(0, 1), i.e. interval [0, 1)
+    return (float)((rng_random_u32(rng) >> 8) / 16777216.0);
+}
+
+void rng_rand(RNG *rng, int n, float a, float b, float *out) {
+    // return n random float32 from Uniform(a, b), in a list
+    for (int i = 0; i < n; ++i) {
+        out[i] = rng_random(rng) * (b - a) + a;
+    }
+}
+
+void rng_randn(RNG *rng, int n, float mu, float sigma, float *out) {
+    // return n random float32 from Normal(0, 1), in a list
+    // (note box-muller transform returns two numbers at a time)
+    for (int i = 0; i < (n + 1) / 2; ++i) {
+        float u1 = rng_random(rng);
+        float u2 = rng_random(rng);
+        float z1, z2;
+        box_muller_transform(u1, u2, &z1, &z2);
+        out[2 * i] = z1 * sigma + mu;
+        if (2 * i + 1 < n) {
+            out[2 * i + 1] = z2 * sigma + mu;
+        }
+    }
+}
 
 // -----------------------------------------------------------------------------
 // MLP model
@@ -218,7 +274,7 @@ typedef struct {
 } MLP;
 
 void mlp_build_from_checkpoint(MLP *model, const char *filename) {
-    // read in model from a checkpoint file
+    // read in model from a checkpoint file - currenlty not used
     FILE *model_file = fopenCheck(filename, "rb");
     int model_header[256];
     freadCheck(model_header, sizeof(int), 256, model_file);
@@ -251,6 +307,36 @@ void mlp_build_from_checkpoint(MLP *model, const char *filename) {
     // read in all the parameters from file
     freadCheck(model->params_memory, sizeof(float), num_parameters, model_file);
     fcloseCheck(model_file);
+}
+
+void mlp_random_init(MLP *model, RNG *rng) {
+    printf("[MLP]\n");
+    printf("vocab_size: %zu\n", model->config.vocab_size);
+    printf("context_length: %zu\n", model->config.context_length);
+    printf("embedding_size: %zu\n", model->config.embedding_size);
+    printf("hidden_size: %zu\n", model->config.hidden_size);
+    fill_in_parameter_sizes(model->param_sizes, model->config);
+
+    // count the number of parameters
+    size_t num_parameters = 0;
+    for (size_t i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+        num_parameters += model->param_sizes[i];
+    }
+    printf("num_parameters: %zu\n", num_parameters);
+    model->num_parameters = num_parameters;
+
+    model->params_memory = malloc_and_point_parameters(&model->params, model->param_sizes, num_parameters);
+
+    // Let's match the PyTorch default initialization:
+    // Embedding with N(0,1)
+    rng_randn(rng, model->param_sizes[0], 0.0f, 1.0f, model->params.wte);
+    // Linear (both W,b) with U(-K, K) where K = 1/sqrt(fan_in)
+    float k1 = 1.0f / sqrtf(model->config.embedding_size * model->config.context_length);
+    rng_rand(rng, model->param_sizes[1], -k1, k1, model->params.fc1_weights);
+    rng_rand(rng, model->param_sizes[2], -k1, k1, model->params.fc1_bias);
+    float k2 = 1.0f / sqrtf(model->config.hidden_size);
+    rng_rand(rng, model->param_sizes[3], -k2, k2, model->params.fc2_weights);
+    rng_rand(rng, model->param_sizes[4], -k2, k2, model->params.fc2_bias);
 }
 
 void mlp_free(MLP *model) {
@@ -572,6 +658,9 @@ float eval_split(MLP *model, int *tokens, int token_cnt, int max_batches, int ba
 // let's train!
 
 int main() {
+    RNG rng;
+    rng_init(&rng, 1337);
+
     FILE *train_file = fopenCheck("data/train.txt", "r");
 
     // ensure that the training data only contains lowercase letters and newlines
@@ -619,7 +708,11 @@ int main() {
 
     // create the model
     MLP model;
-    mlp_build_from_checkpoint(&model, "mlp_weights.bin");
+    model.config.vocab_size = 27;
+    model.config.context_length = 3; // if 3 tokens predict the 4th, this is a 4-gram model
+    model.config.embedding_size = 24;
+    model.config.hidden_size = 512;
+    mlp_random_init(&model, &rng);
 
     // optimizer
     AdamW optimizer;
