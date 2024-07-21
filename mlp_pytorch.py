@@ -21,13 +21,7 @@ class MLP(nn.Module):
     Bengio et al. 2003 https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
     """
 
-    def __init__(self, vocab_size, context_length, embedding_size, hidden_size, seed):
-        torch.manual_seed(seed)
-        self.vocab_size = vocab_size
-        self.context_length = context_length
-        self.embedding_size = embedding_size
-        self.hidden_size = hidden_size
-
+    def __init__(self, vocab_size, context_length, embedding_size, hidden_size):
         super().__init__()
         self.wte = nn.Embedding(vocab_size, embedding_size) # token embedding table
         self.mlp = nn.Sequential(
@@ -35,33 +29,6 @@ class MLP(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_size, vocab_size)
         )
-        self.write_model("mlp_weights.bin")
-
-    def write_model(self, filename):
-        # everything we need to instantiate the model in numpy/C
-        # 1) prepare the header
-        header = torch.zeros(256, dtype=torch.int32)
-        header[0] = 20240719 # magic
-        header[1] = self.vocab_size
-        header[2] = self.context_length
-        header[3] = self.embedding_size
-        header[4] = self.hidden_size
-        # 2) the parameters follow the header
-        params = {name: param.cpu() for name, param in self.named_parameters()}
-
-        def write_fun(tensor, file):
-            t = tensor.detach().cpu().to(torch.float32)
-            b = t.numpy().tobytes()
-            file.write(b)
-
-        with open(filename, "wb") as file:
-            file.write(header.numpy().tobytes()) # header
-            write_fun(params["wte.weight"], file) # (V, C)
-            write_fun(params["mlp.0.weight"].T, file) # (T * C, H)
-            write_fun(params["mlp.0.bias"], file) # (H, )
-            write_fun(params["mlp.2.weight"].T, file) # (H, V)
-            write_fun(params["mlp.2.bias"], file) # (V, )
-        print(f"wrote {filename}")
 
     def forward(self, idx, targets=None):
         # idx are the input tokens, (B, T) tensor of integers
@@ -150,7 +117,6 @@ def eval_split(model, tokens, max_batches=None):
 
 # -----------------------------------------------------------------------------
 # let's train!
-
 random = RNG(1337)
 
 # "train" the Tokenizer, so we're able to map between characters and tokens
