@@ -117,8 +117,27 @@ def eval_split(model, tokens, max_batches=None):
     return mean_loss
 
 # -----------------------------------------------------------------------------
+# sampling from the model
+
+def softmax(logits):
+    # logits here is a (1D) torch.Tensor of shape (V,)
+    maxval = torch.max(logits) # subtract max for numerical stability
+    exps = torch.exp(logits - maxval)
+    probs = exps / torch.sum(exps)
+    return probs
+
+def sample_discrete(probs, coinf):
+    # sample from a discrete distribution
+    # probs is a torch.Tensor of shape (V,)
+    cdf = 0.0
+    for i, prob in enumerate(probs):
+        cdf += prob
+        if coinf < cdf:
+            return i
+    return len(probs) - 1  # in case of rounding errors
+
+# -----------------------------------------------------------------------------
 # let's train!
-random = RNG(1337)
 
 # "train" the Tokenizer, so we're able to map between characters and tokens
 train_text = open('data/train.txt', 'r').read()
@@ -138,7 +157,8 @@ context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
 embedding_size = 48
 hidden_size = 512
 model = MLP(vocab_size, context_length, embedding_size, hidden_size)
-model.reinit(random) # reinitialize the model with our own RNG
+init_rng = RNG(1337)
+model.reinit(init_rng) # reinitialize the model with our own RNG
 
 # create the optimizer
 learning_rate = 7e-4
@@ -173,3 +193,29 @@ for step in range(num_steps):
         # step the optimizer (update the parameters)
         optimizer.step()
         optimizer.zero_grad()
+
+# model inference
+# hardcode a prompt from which we'll continue the text
+sample_rng = RNG(42)
+prompt = "\nrichard"
+context = [char_to_token[c] for c in prompt]
+assert len(context) >= context_length
+context = context[-context_length:] # crop to context_length
+print(prompt, end='', flush=True)
+# now let's sample 200 more tokens that follow
+model.eval()
+with torch.inference_mode():
+    for _ in range(200):
+        # take the last context_length tokens and predict the next one
+        context_tensor = torch.tensor(context).unsqueeze(0) # (1, T)
+        logits, _ = model(context_tensor) # (1, V)
+        probs = softmax(logits[0]) # (V, )
+        coinf = sample_rng.random() # "coin flip", float32 in range [0, 1)
+        next_token = sample_discrete(probs, coinf)
+        context = context[1:] + [next_token] # update the token tape
+        print(token_to_char[next_token], end='', flush=True)
+print() # newline
+
+# and finally report the test loss
+test_loss = eval_split(model, test_tokens)
+print(f'test_loss {test_loss}')
