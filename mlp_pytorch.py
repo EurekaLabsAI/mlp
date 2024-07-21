@@ -158,7 +158,7 @@ for step in range(num_steps):
     if step % 200 == 0 or last_step:
         train_loss = eval_split(model, train_tokens, max_batches=20)
         val_loss = eval_split(model, val_tokens)
-        print(f'step {step}/{num_steps} | train_loss {train_loss:.4f} | val_loss {val_loss:.4f} | lr {lr:e}')
+        print(f'step {step} | train_loss {train_loss:.4f} | val_loss {val_loss:.4f} | lr {lr:e}')
     # ensure the model is in training mode
     model.train()
     # get the next batch of training data
