@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from common import RNG
+from common import RNG, StepTimer
 
 # -----------------------------------------------------------------------------
 # The PyTorch Module
@@ -145,6 +145,7 @@ learning_rate = 7e-4
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
 # training loop
+timer = StepTimer()
 batch_size = 128
 num_steps = 50000
 print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
@@ -159,15 +160,16 @@ for step in range(num_steps):
     if step % 200 == 0 or last_step:
         train_loss = eval_split(model, train_tokens, max_batches=20)
         val_loss = eval_split(model, val_tokens)
-        print(f'step {step} | train_loss {train_loss:.4f} | val_loss {val_loss:.4f} | lr {lr:e}')
-    # ensure the model is in training mode
-    model.train()
-    # get the next batch of training data
-    inputs, targets = next(train_data_iter)
-    # forward through the model
-    logits, loss = model(inputs, targets)
-    # backpropagate and update the weights
-    loss.backward()
-    # step the optimizer
-    optimizer.step()
-    optimizer.zero_grad()
+        print(f'step {step:6d} | train_loss {train_loss:.4f} | val_loss {val_loss:.4f} | lr {lr:e} | time/step {timer.get_dt()*1000:.4f}ms')
+    # training step
+    with timer:
+        # get the next batch of training data
+        inputs, targets = next(train_data_iter)
+        # forward pass (calculate the loss)
+        model.train() # ensure we're in training mode
+        logits, loss = model(inputs, targets)
+        # backpropagate pass (calculate the gradients)
+        loss.backward()
+        # step the optimizer (update the parameters)
+        optimizer.step()
+        optimizer.zero_grad()

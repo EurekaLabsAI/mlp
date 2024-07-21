@@ -1,4 +1,5 @@
 # bunch of less exciting, common utilities we'll use in multiple files
+import time
 from math import log, cos, sin, pi
 
 # -----------------------------------------------------------------------------
@@ -46,3 +47,28 @@ class RNG:
             out.extend([z1 * sigma + mu, z2 * sigma + mu])
         out = out[:n] # if n is odd crop list
         return out
+
+# -----------------------------------------------------------------------------
+# StepTimer for timing code
+
+class StepTimer:
+    def __init__(self, ema_alpha=0.9):
+        self.ema_alpha = ema_alpha
+        self.ema_time = 0
+        self.corrected_ema_time = 0.0
+        self.start_time = None
+        self.step = 0
+
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        end_time = time.time()
+        iteration_time = end_time - self.start_time
+        self.ema_time = self.ema_alpha * self.ema_time + (1 - self.ema_alpha) * iteration_time
+        self.step += 1
+        self.corrected_ema_time = self.ema_time / (1 - self.ema_alpha ** self.step) # bias correction
+
+    def get_dt(self):
+        return self.corrected_ema_time
