@@ -135,17 +135,17 @@ train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 
 # create the model
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
-embedding_size = 24
+embedding_size = 48
 hidden_size = 512
 model = MLP(vocab_size, context_length, embedding_size, hidden_size)
 model.reinit(random) # reinitialize the model with our own RNG
 
 # create the optimizer
-learning_rate = 1e-3
+learning_rate = 7e-4
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
 # training loop
-batch_size = 64
+batch_size = 128
 num_steps = 50000
 print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
 train_data_iter = dataloader(train_tokens, context_length, batch_size)
