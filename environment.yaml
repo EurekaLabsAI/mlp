@@ -1,9 +1,0 @@
-name: eureka_mlp
-channels:
-  - defaults
-  - conda-forge
-  - pytorch
-dependencies:
-  - numpy
-  - torch
-  - torchvision
