@@ -41,6 +41,18 @@ class MLPRaw:
     def __call__(self, idx, targets=None):
         return self.forward(idx, targets)
 
+    @torch.no_grad()
+    def to(self, device):
+        # move all the tensors to the given device
+        self.wte = self.wte.to(device)
+        self.fc1_weights = self.fc1_weights.to(device)
+        self.fc1_bias = self.fc1_bias.to(device)
+        self.fc2_weights = self.fc2_weights.to(device)
+        self.fc2_bias = self.fc2_bias.to(device)
+        for p in self.parameters():
+            p.requires_grad = True
+        return self
+
     def forward(self, idx, targets=None):
         # idx are the input tokens, (B, T) tensor of integers
         # targets are the target tokens, (B, ) tensor of integers
@@ -128,7 +140,7 @@ def dataloader(tokens, context_length, batch_size):
         targets.append(window[-1])
         # once we've collected a batch, emit it
         if len(inputs) == batch_size:
-            yield (torch.tensor(inputs), torch.tensor(targets))
+            yield (torch.tensor(inputs, device=device), torch.tensor(targets, device=device))
             inputs, targets = [], []
         # advance the position and wrap around if we reach the end
         pos += 1
@@ -189,6 +201,14 @@ test_tokens = [char_to_token[c] for c in open('data/test.txt', 'r').read()]
 val_tokens = [char_to_token[c] for c in open('data/val.txt', 'r').read()]
 train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 
+# attempt to detect the best device to run on
+device = "cpu" # default to CPU. Every computer has a CPU.
+if torch.cuda.is_available():
+    device = "cuda" # Nvidia GPU
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps" # Apple Silicon (e.g. Macbook)
+print(f"Using device: {device}")
+
 # create the model
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
 embedding_size = 48
@@ -197,6 +217,7 @@ init_rng = RNG(1337)
 # these two classes both produce the exact same results. One uses nn.Module the other doesn't.
 model = MLPRaw(vocab_size, context_length, embedding_size, hidden_size, init_rng)
 # model = MLP(vocab_size, context_length, embedding_size, hidden_size, init_rng)
+model.to(device) # move all tensors of the model to the device
 
 # create the optimizer
 learning_rate = 7e-4
@@ -243,7 +264,7 @@ print(prompt, end='', flush=True)
 with torch.inference_mode():
     for _ in range(200):
         # take the last context_length tokens and predict the next one
-        context_tensor = torch.tensor(context).unsqueeze(0) # (1, T)
+        context_tensor = torch.tensor(context, device=device).unsqueeze(0) # (1, T)
         logits, _ = model(context_tensor) # (1, V)
         probs = softmax(logits[0]) # (V, )
         coinf = sample_rng.random() # "coin flip", float32 in range [0, 1)
