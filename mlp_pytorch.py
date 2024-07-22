@@ -10,9 +10,9 @@ from torch.nn import functional as F
 from common import RNG, StepTimer
 
 # -----------------------------------------------------------------------------
-# The PyTorch Module
+# PyTorch implementation of the MLP n-gram model: first without using nn.Module
 
-class MLP(nn.Module):
+class MLPRaw:
     """
     Takes the previous n tokens, encodes them with a lookup table,
     concatenates the vectors and predicts the next token with an MLP.
@@ -21,7 +21,50 @@ class MLP(nn.Module):
     Bengio et al. 2003 https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf
     """
 
-    def __init__(self, vocab_size, context_length, embedding_size, hidden_size):
+    def __init__(self, vocab_size, context_length, embedding_size, hidden_size, rng):
+        v, t, e, h = vocab_size, context_length, embedding_size, hidden_size
+        self.embedding_size = embedding_size
+        self.wte = torch.tensor(rng.randn(v * e, mu=0, sigma=1.0)).view(v, e)
+        scale = 1 / math.sqrt(e * t)
+        self.fc1_weights =  torch.tensor(rng.rand(t * e * h, -scale, scale)).view(h, t * e).T
+        self.fc1_bias = torch.tensor(rng.rand(h, -scale, scale))
+        scale = 1 / math.sqrt(h)
+        self.fc2_weights = torch.tensor(rng.rand(v * h, -scale, scale)).view(v, h).T
+        self.fc2_bias = torch.tensor(rng.rand(v, -scale, scale))
+        # Have to explicitly tell PyTorch that these are parameters and require gradients
+        for p in self.parameters():
+            p.requires_grad = True
+
+    def parameters(self):
+        return [self.wte, self.fc1_weights, self.fc1_bias, self.fc2_weights, self.fc2_bias]
+
+    def __call__(self, idx, targets=None):
+        return self.forward(idx, targets)
+
+    def forward(self, idx, targets=None):
+        # idx are the input tokens, (B, T) tensor of integers
+        # targets are the target tokens, (B, ) tensor of integers
+        B, T = idx.size()
+        # forward pass
+        # encode all the tokens using the embedding table
+        emb = self.wte[idx] # (B, T, embedding_size)
+        # concat all of the embeddings together
+        emb = emb.view(B, -1) # (B, T * embedding_size)
+        # forward through the MLP
+        hidden = torch.tanh(emb @ self.fc1_weights + self.fc1_bias)
+        logits = hidden @ self.fc2_weights + self.fc2_bias
+        # if we are given desired targets, also calculate the loss
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits, targets)
+        return logits, loss
+
+# -----------------------------------------------------------------------------
+# Equivalent PyTorch implementation of the MLP n-gram model: using nn.Module
+
+class MLP(nn.Module):
+
+    def __init__(self, vocab_size, context_length, embedding_size, hidden_size, rng):
         super().__init__()
         self.wte = nn.Embedding(vocab_size, embedding_size) # token embedding table
         self.mlp = nn.Sequential(
@@ -29,22 +72,7 @@ class MLP(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_size, vocab_size)
         )
-
-    def forward(self, idx, targets=None):
-        # idx are the input tokens, (B, T) tensor of integers
-        # targets are the target tokens, (B, ) tensor of integers
-        B, T = idx.size()
-        # encode all the tokens using the embedding table
-        emb = self.wte(idx) # (B, T, embedding_size)
-        # concat all of the embeddings together
-        emb = emb.view(B, -1) # (B, T * embedding_size)
-        # forward through the MLP
-        logits = self.mlp(emb)
-        # if we are given desired targets, also calculate the loss
-        loss = None
-        if targets is not None:
-            loss = F.cross_entropy(logits, targets)
-        return logits, loss
+        self.reinit(rng)
 
     @torch.no_grad()
     def reinit(self, rng):
@@ -75,6 +103,16 @@ class MLP(nn.Module):
         reinit_tensor_rand(self.mlp[2].weight, -scale, scale)
         reinit_tensor_rand(self.mlp[2].bias, -scale, scale)
 
+    def forward(self, idx, targets=None):
+        B, T = idx.size()
+        emb = self.wte(idx) # (B, T, embedding_size)
+        emb = emb.view(B, -1) # (B, T * embedding_size)
+        logits = self.mlp(emb)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits, targets)
+        return logits, loss
+
 # -----------------------------------------------------------------------------
 # simple DataLoader that iterates over all the n-grams
 
@@ -103,7 +141,6 @@ def dataloader(tokens, context_length, batch_size):
 @torch.inference_mode()
 def eval_split(model, tokens, max_batches=None):
     # calculate the loss on the given tokens
-    model.eval()
     total_loss = 0
     num_batches = len(tokens) // batch_size
     if max_batches is not None:
@@ -156,9 +193,10 @@ train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
 embedding_size = 48
 hidden_size = 512
-model = MLP(vocab_size, context_length, embedding_size, hidden_size)
 init_rng = RNG(1337)
-model.reinit(init_rng) # reinitialize the model with our own RNG
+# these two classes both produce the exact same results. One uses nn.Module the other doesn't.
+model = MLPRaw(vocab_size, context_length, embedding_size, hidden_size, init_rng)
+# model = MLP(vocab_size, context_length, embedding_size, hidden_size, init_rng)
 
 # create the optimizer
 learning_rate = 7e-4
@@ -186,7 +224,6 @@ for step in range(num_steps):
         # get the next batch of training data
         inputs, targets = next(train_data_iter)
         # forward pass (calculate the loss)
-        model.train() # ensure we're in training mode
         logits, loss = model(inputs, targets)
         # backpropagate pass (calculate the gradients)
         loss.backward()
@@ -203,7 +240,6 @@ assert len(context) >= context_length
 context = context[-context_length:] # crop to context_length
 print(prompt, end='', flush=True)
 # now let's sample 200 more tokens that follow
-model.eval()
 with torch.inference_mode():
     for _ in range(200):
         # take the last context_length tokens and predict the next one

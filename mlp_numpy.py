@@ -55,8 +55,8 @@ class MLP:
         # concat all of the embeddings together
         emb = emb.reshape(B, -1) # (B, T * embedding_size)
         # forward through the MLP
-        hidden = np.tanh(np.dot(emb, self.fc1_weights) + self.fc1_bias)
-        logits = np.dot(hidden, self.fc2_weights) + self.fc2_bias
+        hidden = np.tanh(emb @ self.fc1_weights + self.fc1_bias)
+        logits = hidden @ self.fc2_weights + self.fc2_bias
 
         # cache some of the activations for the backward pass later
         self.cache['idx'] = idx
@@ -93,15 +93,15 @@ class MLP:
         dlogits[np.arange(len(targets)), targets] -= 1
         dlogits /= len(targets)
         # backward through the last linear layer of the MLP
-        dfc2_weights = np.dot(hidden.T, dlogits)
+        dfc2_weights = hidden.T @ dlogits
         dfc2_bias = np.sum(dlogits, axis=0)
-        dhidden = np.dot(dlogits, self.fc2_weights.T)
+        dhidden = dlogits @ self.fc2_weights.T
         # backward through the tanh activation
         dprehidden = dhidden * (1 - hidden ** 2)
         # backward through the first linear layer of the MLP
-        dfc1_weights = np.dot(emb.T, dprehidden)
+        dfc1_weights = emb.T @ dprehidden
         dfc1_bias = np.sum(dprehidden, axis=0)
-        demb = np.dot(dprehidden, self.fc1_weights.T).reshape(B, T, self.embedding_size)
+        demb = (dprehidden @ self.fc1_weights.T).reshape(B, T, self.embedding_size)
         # backward through the embedding table
         dwte = np.zeros_like(self.wte)
         # TODO: iirc there is a vectorized way to do this
@@ -234,7 +234,7 @@ optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 # training loop
 timer = StepTimer()
 batch_size = 128
-num_steps = 1000 # 50000
+num_steps = 50000
 print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
 train_data_iter = dataloader(train_tokens, context_length, batch_size)
 for step in range(num_steps):
