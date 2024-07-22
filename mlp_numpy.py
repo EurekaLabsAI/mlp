@@ -43,7 +43,7 @@ class MLP:
             'fc2_bias': self.fc2_bias
         }
 
-    def __call__(self, idx, targets):
+    def __call__(self, idx, targets=None):
         return self.forward(idx, targets)
 
     def forward(self, idx, targets=None):
@@ -185,6 +185,26 @@ def eval_split(model, tokens, max_batches=None):
     return mean_loss
 
 # -----------------------------------------------------------------------------
+# sampling form the model
+
+def softmax(logits):
+    # logits here is a (1D) numpy.array of shape (V,)
+    maxval = np.max(logits) # subtract max for numerical stability
+    exps = np.exp(logits - maxval)
+    probs = exps / np.sum(exps)
+    return probs
+
+def sample_discrete(probs, coinf):
+    # sample from a discrete distribution
+    # probs is a 1D numpy array of shape (V,)
+    cdf = 0.0
+    for i, prob in enumerate(probs):
+        cdf += prob
+        if coinf < cdf:
+            return i
+    return len(probs) - 1  # in case of rounding errors
+
+# -----------------------------------------------------------------------------
 # let's train!
 
 # "train" the Tokenizer, so we're able to map between characters and tokens
@@ -214,7 +234,7 @@ optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 # training loop
 timer = StepTimer()
 batch_size = 128
-num_steps = 50000
+num_steps = 1000 # 50000
 print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
 train_data_iter = dataloader(train_tokens, context_length, batch_size)
 for step in range(num_steps):
@@ -237,3 +257,27 @@ for step in range(num_steps):
         grads = model.backward()
         # step the optimizer
         optimizer.step(grads)
+
+# model inference
+# hardcode a prompt from which we'll continue the text
+sample_rng = RNG(42)
+prompt = "\nrichard"
+context = [char_to_token[c] for c in prompt]
+assert len(context) >= context_length
+context = context[-context_length:] # crop to context_length
+print(prompt, end='', flush=True)
+# now let's sample 200 more tokens that follow
+for _ in range(200):
+    # take the last context_length tokens and predict the next one
+    context_array = np.array(context).reshape(1, -1) # (1, T)
+    logits, _ = model(context_array) # (1, V)
+    probs = softmax(logits[0]) # (V, )
+    coinf = sample_rng.random() # "coin flip", float32 in range [0, 1)
+    next_token = sample_discrete(probs, coinf)
+    context = context[1:] + [next_token] # update the token tape
+    print(token_to_char[next_token], end='', flush=True)
+print() # newline
+
+# and finally report the test loss
+test_loss = eval_split(model, test_tokens)
+print(f'test_loss {test_loss:.6f}')
