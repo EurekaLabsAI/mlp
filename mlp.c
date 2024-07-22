@@ -701,13 +701,13 @@ int main() {
     MLP model;
     model.config.vocab_size = 27;
     model.config.context_length = 3; // if 3 tokens predict the 4th, this is a 4-gram model
-    model.config.embedding_size = 24;
+    model.config.embedding_size = 48;
     model.config.hidden_size = 512;
     mlp_random_init(&model, &rng);
 
     // optimizer
     AdamW optimizer;
-    float learning_rate = 1e-3;
+    float learning_rate = 7e-4;
     float weight_decay = 1e-4;
     float beta1 = 0.9;
     float beta2 = 0.999;
@@ -715,7 +715,7 @@ int main() {
     adamw_init(&optimizer, model.num_parameters, learning_rate, beta1, beta2, weight_decay, eps);
 
     // training loop
-    int batch_size = 64;
+    int batch_size = 128;
     int num_steps = 50000;
     model.config.batch_size = batch_size;
     printf("num_steps %d, num_epochs %.2f\n", num_steps, num_steps * batch_size / (float)train_token_count);
