@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 // -----------------------------------------------------------------------------
 // Helper wrapper functions
@@ -143,6 +144,40 @@ void rng_randn(RNG *rng, int n, float mu, float sigma, float *out) {
             out[2 * i + 1] = z2 * sigma + mu;
         }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Timer utilities
+
+typedef struct {
+    double ema_alpha;
+    double ema_time;
+    double corrected_ema_time;
+    clock_t start_time;
+    int step;
+} StepTimer;
+
+void init_timer(StepTimer *timer, double ema_alpha) {
+    timer->ema_alpha = ema_alpha;
+    timer->ema_time = 0;
+    timer->corrected_ema_time = 0.0;
+    timer->step = 0;
+}
+
+void start_timer(StepTimer *timer) {
+    timer->start_time = clock();
+}
+
+void stop_timer(StepTimer *timer) {
+    clock_t end_time = clock();
+    double iteration_time = (double)(end_time - timer->start_time) / CLOCKS_PER_SEC;
+    timer->ema_time = timer->ema_alpha * timer->ema_time + (1 - timer->ema_alpha) * iteration_time;
+    timer->step += 1;
+    timer->corrected_ema_time = timer->ema_time / (1 - pow(timer->ema_alpha, timer->step));
+}
+
+double get_dt(StepTimer *timer) {
+    return timer->corrected_ema_time;
 }
 
 // -----------------------------------------------------------------------------
@@ -715,6 +750,8 @@ int main() {
     adamw_init(&optimizer, model.num_parameters, learning_rate, beta1, beta2, weight_decay, eps);
 
     // training loop
+    StepTimer timer;
+    init_timer(&timer, 0.9);
     int batch_size = 128;
     int num_steps = 50000;
     model.config.batch_size = batch_size;
@@ -728,8 +765,9 @@ int main() {
         if (step % 200 == 0 || last_step) {
             float train_loss = eval_split(&model, train_tokens, train_token_count, 20, batch_size);
             float val_loss = eval_split(&model, val_tokens, val_token_count, 0, batch_size);
-            printf("step %d/%d | train_loss %.4f | val_loss %.4f | lr %.6f\n", step, num_steps, train_loss, val_loss, lr);
+            printf("step %d/%d | train_loss %.4f | val_loss %.4f | lr %.6f | time/step %.4fms\n", step, num_steps, train_loss, val_loss, lr, get_dt(&timer) * 1000);
         }
+        start_timer(&timer);
         // get the next batch of training data
         dataloader(&model, train_tokens, model.config.context_length, batch_size, train_token_count, &pos);
         // forward through the model
@@ -740,6 +778,7 @@ int main() {
         backward(&model);
         // update the weights
         update(&optimizer, &model);
+        stop_timer(&timer);
     }
 
     // free all dynamically allocated memory
