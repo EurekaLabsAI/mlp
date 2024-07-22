@@ -9,6 +9,10 @@ from torch.nn import functional as F
 
 from common import RNG, StepTimer
 
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 # -----------------------------------------------------------------------------
 # The PyTorch Module
 
@@ -90,7 +94,7 @@ def dataloader(tokens, context_length, batch_size):
         targets.append(window[-1])
         # once we've collected a batch, emit it
         if len(inputs) == batch_size:
-            yield (torch.tensor(inputs), torch.tensor(targets))
+            yield (torch.tensor(inputs, device=device), torch.tensor(targets, device=device))
             inputs, targets = [], []
         # advance the position and wrap around if we reach the end
         pos += 1
@@ -156,7 +160,7 @@ train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
 embedding_size = 48
 hidden_size = 512
-model = MLP(vocab_size, context_length, embedding_size, hidden_size)
+model = MLP(vocab_size, context_length, embedding_size, hidden_size).to(device)
 init_rng = RNG(1337)
 model.reinit(init_rng) # reinitialize the model with our own RNG
 
@@ -207,7 +211,7 @@ model.eval()
 with torch.inference_mode():
     for _ in range(200):
         # take the last context_length tokens and predict the next one
-        context_tensor = torch.tensor(context).unsqueeze(0) # (1, T)
+        context_tensor = torch.tensor(context, device=device).unsqueeze(0) # (1, T)
         logits, _ = model(context_tensor) # (1, V)
         probs = softmax(logits[0]) # (V, )
         coinf = sample_rng.random() # "coin flip", float32 in range [0, 1)
