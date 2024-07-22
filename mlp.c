@@ -788,7 +788,7 @@ int main() {
         if (step % 200 == 0 || last_step) {
             float train_loss = eval_split(&model, train_tokens, train_token_count, 20, batch_size);
             float val_loss = eval_split(&model, val_tokens, val_token_count, 0, batch_size);
-            printf("step %d/%d | train_loss %.4f | val_loss %.4f | lr %.6f | time/step %.4fms\n", step, num_steps, train_loss, val_loss, lr, get_dt(&timer) * 1000);
+            printf("step %d/%d | train_loss %.6f | val_loss %.6f | lr %.6f | time/step %.4fms\n", step, num_steps, train_loss, val_loss, lr, get_dt(&timer) * 1000);
         }
         start_timer(&timer);
         // get the next batch of training data
