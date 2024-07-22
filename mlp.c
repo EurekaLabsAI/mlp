@@ -311,7 +311,7 @@ typedef struct {
     int* targets; // the target tokens for the current forward pass
 } MLP;
 
-void mlp_random_init(MLP *model, RNG *rng) {
+void mlp_random_init(MLP *model, RNG *init_rng) {
     size_t V = model->config.vocab_size;
     size_t T = model->config.context_length;
     size_t E = model->config.embedding_size;
@@ -335,32 +335,32 @@ void mlp_random_init(MLP *model, RNG *rng) {
 
     // Let's match the PyTorch default initialization:
     // Embedding with N(0,1)
-    rng_randn(rng, model->param_sizes[0], 0.0f, 1.0f, model->params.wte);
+    rng_randn(init_rng, model->param_sizes[0], 0.0f, 1.0f, model->params.wte);
 
     // Linear (both W,b) with U(-K, K) where K = 1/sqrt(fan_in)
     // we need (T*E, H) in order to keep equivalency with PyTorch but we have (H, T*E)
     // let's transpose the weights in fc1_weights
     float tmp_buffer[E * T * H];
     float k1 = 1.0f / sqrtf(E * T);
-    rng_rand(rng, model->param_sizes[1], -k1, k1, tmp_buffer);
+    rng_rand(init_rng, model->param_sizes[1], -k1, k1, tmp_buffer);
     // set fc1_weights as transposed tmp_buffer (both are row-major)
     for (size_t i = 0; i < T * E; i++) {
         for (size_t j = 0; j < H; j++) {
             model->params.fc1_weights[i * H + j] = tmp_buffer[j * T * E + i];
         }
     }
-    rng_rand(rng, model->param_sizes[2], -k1, k1, model->params.fc1_bias);
+    rng_rand(init_rng, model->param_sizes[2], -k1, k1, model->params.fc1_bias);
 
     float tmp_buffer2[H * V];
     float k2 = 1.0f / sqrtf(model->config.hidden_size);
-    rng_rand(rng, model->param_sizes[3], -k2, k2, tmp_buffer2);
+    rng_rand(init_rng, model->param_sizes[3], -k2, k2, tmp_buffer2);
     // set fc2_weights as transposed tmp_buffer2 (both are row-major)
     for (size_t i = 0; i < H; i++) {
         for (size_t j = 0; j < V; j++) {
             model->params.fc2_weights[i * V + j] = tmp_buffer2[j * H + i];
         }
     }
-    rng_rand(rng, model->param_sizes[4], -k2, k2, model->params.fc2_bias);
+    rng_rand(init_rng, model->param_sizes[4], -k2, k2, model->params.fc2_bias);
 
     printf("Initialized model parameters.\n");
 }
@@ -371,7 +371,8 @@ void mlp_free(MLP *model) {
     free(model->acts_memory);
     free(model->grads_memory);
     free(model->grads_acts_memory);
-    free(model->inputs);
+    // note: we don't free inputs as we free it up just before sampling and later it points to a static array
+    // free(model->inputs);
     free(model->targets);
 }
 
@@ -485,7 +486,10 @@ float forward(MLP *model) {
     matmul_forward(acts.logits, acts.h, params.fc2_weights, params.fc2_bias, B, H, V);  // (B, H) @ (H, V) = (B, V)
     softmax_forward(acts.probs, acts.logits, B, V);  // (B, V)
 
-    float loss = cross_entropy(acts.probs, model->targets, B, V);  // scalar
+    float loss = -1;
+    if (model->targets != NULL) {
+        loss = cross_entropy(acts.probs, model->targets, B, V);  // scalar
+    }
     return loss;
 }
 
@@ -646,8 +650,10 @@ void adam_free(AdamW *optimizer) {
 // simple DataLoader that iterates over all the n-grams
 
 void dataloader(MLP* model, int *tokens, int context_length, int batch_size, int token_cnt, int *pos) {
-    if (model->acts_memory == NULL) {  // lazy initialization the first time we call dataloader
+    if (model->inputs == NULL) {  // lazy initialization the first time we call dataloader
         model->inputs = (int*)mallocCheck(batch_size * model->config.context_length * sizeof(int));
+    }
+    if (model->targets == NULL) {
         model->targets = (int*)mallocCheck(batch_size * sizeof(int));
     }
 
@@ -681,11 +687,28 @@ float eval_split(MLP *model, int *tokens, int token_cnt, int max_batches, int ba
 }
 
 // -----------------------------------------------------------------------------
+// sampling from the model
+
+int sample_discrete(float* probabilities, int n, float coinf) {
+    // sample from a discrete distribution
+    // coin is a random number in [0, 1)
+    // probabilities is an array of n probabilities that sum to 1
+    float cdf = 0.0f;
+    for (int i = 0; i < n; i++) {
+        cdf += probabilities[i];
+        if (coinf < cdf) {
+            return i;
+        }
+    }
+    return n - 1; // in case of rounding errors
+}
+
+// -----------------------------------------------------------------------------
 // let's train!
 
 int main() {
-    RNG rng;
-    rng_init(&rng, 1337);
+    RNG init_rng;
+    rng_init(&init_rng, 1337);
 
     FILE *train_file = fopenCheck("data/train.txt", "r");
 
@@ -738,7 +761,7 @@ int main() {
     model.config.context_length = 3; // if 3 tokens predict the 4th, this is a 4-gram model
     model.config.embedding_size = 48;
     model.config.hidden_size = 512;
-    mlp_random_init(&model, &rng);
+    mlp_random_init(&model, &init_rng);
 
     // optimizer
     AdamW optimizer;
@@ -780,6 +803,46 @@ int main() {
         update(&optimizer, &model);
         stop_timer(&timer);
     }
+
+    // model inference
+    // hardcode a prompt from which we'll continue the text
+    RNG sample_rng;
+    rng_init(&sample_rng, 42);
+    char prompt[] = "\nrichard";
+    int context_length = model.config.context_length;
+    int context[context_length];
+    int prompt_length = strlen(prompt);
+    // take the last context_length tokens from the prompt
+    for (int i = 0; i < context_length; i++) {
+        context[i] = prompt[prompt_length - context_length + i] - 'a' + 1;
+    }
+    printf("%s", prompt);
+    fflush(stdout);
+    model.config.batch_size = 1;
+    free(model.inputs);
+    free(model.targets);  // free the targets so we don't compute the loss in fwd pass
+    model.inputs = context;
+    model.targets = NULL;
+    // now let's sample 200 more tokens that follow
+    for (int i = 0; i < 200; i++) {
+        // take the last context_length tokens and predict the next one
+        forward(&model);
+        float *probs = model.acts.probs;
+        float coinf = rng_random(&sample_rng);
+        int next_token = sample_discrete(probs, model.config.vocab_size, coinf);
+        // shift the context to the left and append the next token
+        for (int j = 0; j < context_length - 1; j++) {
+            context[j] = context[j + 1];
+        }
+        context[context_length - 1] = next_token;
+        printf("%c", next_token == 0 ? 10 : next_token + 'a' - 1);
+        fflush(stdout);
+    }
+
+    // and finally report the test loss
+    model.config.batch_size = batch_size;
+    float test_loss = eval_split(&model, test_tokens, test_token_count, 0, batch_size);
+    printf("test_loss %.4f\n", test_loss);
 
     // free all dynamically allocated memory
     mlp_free(&model);
