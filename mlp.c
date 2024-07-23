@@ -362,6 +362,12 @@ void mlp_random_init(MLP *model, RNG *init_rng) {
     }
     rng_rand(init_rng, model->param_sizes[4], -k2, k2, model->params.fc2_bias);
 
+    model->acts_memory = NULL;
+    model->grads_memory = NULL;
+    model->grads_acts_memory = NULL;
+    model->inputs = NULL;
+    model->targets = NULL;
+
     printf("Initialized model parameters.\n");
 }
 
