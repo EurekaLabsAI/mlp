@@ -104,10 +104,7 @@ class MLP:
         demb = (dprehidden @ self.fc1_weights.T).reshape(B, T, self.embedding_size)
         # backward through the embedding table
         dwte = np.zeros_like(self.wte)
-        # TODO: iirc there is a vectorized way to do this
-        for i in range(B):
-            for j in range(T):
-                dwte[idx[i, j]] += demb[i, j]
+        np.add.at(dwte, idx, demb)
 
         return {
             'wte': dwte,
