@@ -32,14 +32,24 @@ class MLPRaw:
         self.fc2_weights = torch.tensor(rng.rand(v * h, -scale, scale)).view(v, h).T
         self.fc2_bias = torch.tensor(rng.rand(v, -scale, scale))
         # Have to explicitly tell PyTorch that these are parameters and require gradients
-        for p in self.parameters():
-            p.requires_grad = True
+        # for p in self.parameters():
+        #     p.requires_grad = True
 
     def parameters(self):
         return [self.wte, self.fc1_weights, self.fc1_bias, self.fc2_weights, self.fc2_bias]
 
     def __call__(self, idx, targets=None):
         return self.forward(idx, targets)
+
+    def to(self, device):
+        self.wte = self.wte.to(device)
+        self.fc1_weights = self.fc1_weights.to(device)
+        self.fc1_bias = self.fc1_bias.to(device)
+        self.fc2_weights = self.fc2_weights.to(device)
+        self.fc2_bias = self.fc2_bias.to(device)
+        # Have to explicitly tell PyTorch that these are parameters and require gradients
+        for p in self.parameters():
+            p.requires_grad = True
 
     def forward(self, idx, targets=None):
         # idx are the input tokens, (B, T) tensor of integers
@@ -128,7 +138,7 @@ def dataloader(tokens, context_length, batch_size):
         targets.append(window[-1])
         # once we've collected a batch, emit it
         if len(inputs) == batch_size:
-            yield (torch.tensor(inputs), torch.tensor(targets))
+            yield (torch.tensor(inputs).to(device), torch.tensor(targets).to(device))
             inputs, targets = [], []
         # advance the position and wrap around if we reach the end
         pos += 1
@@ -195,9 +205,13 @@ embedding_size = 48
 hidden_size = 512
 init_rng = RNG(1337)
 # these two classes both produce the exact same results. One uses nn.Module the other doesn't.
-model = MLPRaw(vocab_size, context_length, embedding_size, hidden_size, init_rng)
-# model = MLP(vocab_size, context_length, embedding_size, hidden_size, init_rng)
+# model = MLPRaw(vocab_size, context_length, embedding_size, hidden_size, init_rng)
+model = MLP(vocab_size, context_length, embedding_size, hidden_size, init_rng)
 
+# Check if GPU is available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f'{device} is available.')
+model.to(device) 
 # create the optimizer
 learning_rate = 7e-4
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
@@ -243,7 +257,7 @@ print(prompt, end='', flush=True)
 with torch.inference_mode():
     for _ in range(200):
         # take the last context_length tokens and predict the next one
-        context_tensor = torch.tensor(context).unsqueeze(0) # (1, T)
+        context_tensor = torch.tensor(context).unsqueeze(0).to(device) # (1, T)
         logits, _ = model(context_tensor) # (1, V)
         probs = softmax(logits[0]) # (V, )
         coinf = sample_rng.random() # "coin flip", float32 in range [0, 1)
