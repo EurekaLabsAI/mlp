@@ -222,18 +222,19 @@ train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 
 # create the model
 context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
-embedding_size = 48
-hidden_size = 512
+embedding_size = 256
+hidden_size = 1024
 init_rng = RNG(1337)
 model = MLP(init_rng, vocab_size, context_length, embedding_size, hidden_size)
 
 # optimizer
-learning_rate = 7e-4
-optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+learning_rate = 1e-4
+weight_decay = 1e-3
+optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
 # training loop
 timer = StepTimer()
-batch_size = 128
+batch_size = 256
 num_steps = 50000
 print(f'num_steps {num_steps}, num_epochs {num_steps * batch_size / len(train_tokens):.2f}')
 train_data_iter = dataloader(train_tokens, context_length, batch_size)
