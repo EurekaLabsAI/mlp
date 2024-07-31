@@ -185,13 +185,45 @@ def generate_text(model, prompt, max_new_tokens, rng):
         yield token_to_char[next_token] if next_token != EOT_TOKEN else "  \n"
 
 
+@torch.inference_mode()
+def generate_text_step_by_step(model, context, rng):
+    model.eval()
+    context_tensor = torch.tensor(context).unsqueeze(0).to(device)
+    logits, _ = model(context_tensor)
+    probs = softmax(logits[0])
+    coinf = rng.random()
+    next_token = sample_discrete(probs, coinf)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=[token_to_char[i] for i in range(len(probs))],
+            y=probs.cpu().detach().numpy(),
+            marker=dict(color=probs.cpu().detach().numpy(), colorscale="Viridis"),
+        )
+    )
+    fig.update_layout(
+        title=f"""Next token probability<br>Context: {''.join(token_to_char[t] for t in context)} | Predicted token: {token_to_char[next_token]}
+        """,
+        xaxis_title="Token",
+        yaxis_title="Probability",
+    )
+
+    return probs, next_token, fig
+
+
 def visualize_logits(input_tokens, target_tokens, model):
     model.eval()
     logits, _ = model(input_tokens)
-    probs = softmax(logits)
+    probs = [softmax(logits[i]) for i in range(len(logits))]
+
+    coinf = RNG(42).random()
+
     figs = []
 
     for i, prob in enumerate(probs):
+        next_token = sample_discrete(prob, coinf)
+
         fig = go.Figure()
         fig.add_trace(
             go.Bar(
@@ -201,7 +233,7 @@ def visualize_logits(input_tokens, target_tokens, model):
             )
         )
         fig.update_layout(
-            title=f"""Logits as probabilities of the next token | Step: {st.session_state.step_count}<br>Input: {''.join(token_to_char[t.item()] for t in input_tokens[i])} | Target: {token_to_char[target_tokens[i].item()]}
+            title=f"""Next token probability | Step: {st.session_state.step_count}<br>Input: {''.join(token_to_char[t.item()] for t in input_tokens[i])} | Target: {token_to_char[target_tokens[i].item()]} | Predicted token: {token_to_char[next_token]}
             """,
             xaxis_title="Token",
             yaxis_title="Probability",
@@ -243,24 +275,53 @@ def visualize_loss(loss_history):
     return fig
 
 
-# Streamlit app
-st.title("MLP - n-gram Playground")
+st.title("n-gram Language Model with MLP")
+st.markdown(
+    "This app demonstrates a simple n-gram model using a Multi-Layer Perceptron (MLP) to predict the next token in a sequence of characters. It is based on the [mlp](https://github.com/EurekaLabsAI/mlp) repository, and the paper [A Neural Probabilistic Language Model](https://www.jmlr.org/papers/volume3/bengio03a/bengio03a.pdf)."
+)
+st.markdown(
+    "You can train the model for a specified number of steps, visualize the predicted probabilities for the next token as the model trains, and sample text using the trained model."
+)
 
 # Parameters
+st.sidebar.header("Model parameters")
 context_length = st.sidebar.number_input(
-    "Context Length", value=3, min_value=1, max_value=100
+    "Context Length",
+    value=3,
+    min_value=1,
+    max_value=100,
+    help="Number of characters to consider as context for predicting the next character.",
 )
 embedding_size = st.sidebar.number_input(
-    "Embedding Size", value=48, min_value=1, max_value=1024
+    "Embedding Size",
+    value=48,
+    min_value=1,
+    max_value=1024,
+    step=48,
+    help="Size of the embedding vector for each character.",
 )
 hidden_size = st.sidebar.number_input(
-    "Hidden Size", value=512, min_value=1, max_value=1024
+    "Hidden Size",
+    value=512,
+    min_value=1,
+    max_value=1024,
+    step=128,
+    help="Number of neurons in the hidden layer of the MLP.",
 )
 batch_size = st.sidebar.number_input(
-    "Batch Size", value=128, min_value=1, max_value=128
+    "Batch Size",
+    value=128,
+    min_value=1,
+    max_value=128,
+    step=16,
+    help="Number of samples processed before the model is updated.",
 )
 
+st.sidebar.header("Information")
 st.sidebar.write(f"Using device: ```{device}```")
+st.sidebar.write(f"Maximum steps: {TOTAL_STEPS}")
+st.sidebar.write(f"Initial learning rate: {LEARNING_RATE}")
+st.sidebar.write(f"Vocabulary size: {vocab_size}")
 
 
 # Initialize or reset session state
@@ -298,21 +359,21 @@ if (
     init_session_state()
 
 # Training buttons
+training_steps = st.number_input(
+    "Number of training steps",
+    value=1000,
+    min_value=1,
+    max_value=10000,
+    step=100,
+    help="Number of steps to train the model.",
+)
+
 col1, col2 = st.columns(2)
+
 with col1:
-    if st.button("Train 1 Step"):
-        idx, targets = next(st.session_state.train_data_iter)
-        idx, targets = idx.to(device), targets.to(device)
-        _, loss, lr = train_step(
-            st.session_state.model, idx, targets, st.session_state.optimizer
-        )
-
-        st.session_state.step_count += 1
-
-with col2:
-    if st.button("Train 2000 Steps"):
+    if st.button("Train Model", type="primary"):
         with st.status(f"Training | Step: {st.session_state.step_count}") as status:
-            for _ in range(2000):
+            for _ in range(training_steps):
                 idx, targets = next(st.session_state.train_data_iter)
                 idx, targets = idx.to(device), targets.to(device)
                 _, loss, lr = train_step(
@@ -344,12 +405,19 @@ with col2:
 
             status.update(state="complete")
 
+with col2:
+    if st.button("Reset Model"):
+        init_session_state()
+        st.success("Model has been reset to initial state.")
+
 with st.expander("Model Parameters"):
     st.write(st.session_state.model)
 
-# Visualize first batch
-with st.expander("Visualize First Batch", expanded=True):
-    st.subheader("Visualization of First Batch (max 8 samples)")
+with st.expander("Visualize batch of data"):
+    st.write("#### First 8 samples from the training data")
+    st.write(
+        "This table shows the first 8 samples from the training data, along with the target token."
+    )
     first_idx, first_targets = st.session_state.first_batch
 
     st.dataframe(
@@ -357,11 +425,15 @@ with st.expander("Visualize First Batch", expanded=True):
             "Input": [
                 "".join(token_to_char[t.item()] for t in tokens) for tokens in first_idx
             ],
-            "Targets": [token_to_char[t.item()] for t in first_targets],
+            "Target": [token_to_char[t.item()] for t in first_targets],
         },
         use_container_width=True,
     )
 
+    st.write("### Next token probabilities")
+    st.write(
+        "The following plots show the predicted probabilities for the next token in each of the first 8 samples. Note how the predictions change as the model is trained."
+    )
     figs = visualize_logits(
         first_idx.to(device), first_targets.to(device), st.session_state.model
     )
@@ -374,23 +446,104 @@ with st.expander("Visualize First Batch", expanded=True):
 with st.expander(
     f"Loss history | Total steps taken: {st.session_state.step_count} / {TOTAL_STEPS}"
 ):
-    # Display training progress
+    st.write(
+        "The following plot shows the training and validation loss over time. The evaluation is done every 200 steps on both the training and validation data."
+    )
     if st.session_state.loss_history:
         st.plotly_chart(
             visualize_loss(st.session_state.loss_history), use_container_width=True
         )
 
+with st.expander("Sample from the model"):
+    st.write("This section allows you to generate text using the trained model.")
+    prompt = st.text_input("Prompt", "richard\n", key="shared_prompt")
 
-with st.expander(
-    "Generate text",
-    expanded=True,
-):
-    prompt = st.text_input("Prompt", "richard\n")
-    max_new_tokens = st.number_input(
-        "Max New Tokens", value=200, min_value=1, max_value=400
-    )
-    if st.button("Generate Text"):
-        text_generator = generate_text(
-            st.session_state.model, prompt, max_new_tokens, RNG(42)
+    if prompt == "":
+        prompt = "\n" * context_length
+
+    sample_rng = RNG(42)
+
+    generate, step_by_step = st.columns([0.3, 0.7])
+
+    with generate:
+        st.write("### Generate text")
+        max_new_tokens = st.number_input(
+            "\# of new tokens",
+            value=200,
+            min_value=1,
+            max_value=400,
+            help="Number of tokens to sample from the model.",
         )
-        st.write_stream(text_generator)
+
+        st.write(
+            "This button generates the specified number of tokens at once, sampling from the model and updating the context at each step."
+        )
+
+        if st.button("Generate Text"):
+            text_generator = generate_text(
+                st.session_state.model, prompt, max_new_tokens, sample_rng
+            )
+            st.session_state.generated_text_output = "".join(list(text_generator))
+
+        if "generated_text_output" in st.session_state:
+            st.write(st.session_state.generated_text_output)
+
+    with step_by_step:
+        st.write("### Generate text step by step")
+        tokens_to_generate = st.number_input(
+            "\# of tokens to generate",
+            value=10,
+            min_value=1,
+            max_value=100,
+            help="Number of tokens to generate step by step.",
+        )
+
+        st.write(
+            "This button generates the specified number of tokens step by step, showing the predicted probabilities for the next token at each step, along with the generated text so far."
+        )
+
+        if (
+            "prev_prompt" not in st.session_state
+            or st.session_state.prev_prompt != prompt
+        ):
+            st.session_state.context = [char_to_token[c] for c in prompt]
+            st.session_state.generated_text = []
+            st.session_state.prev_prompt = prompt
+            st.session_state.text_at_step = []
+
+        st.session_state.context = st.session_state.context[-context_length:]
+
+        if st.button("Generate next tokens", type="primary"):
+            st.session_state.context = [char_to_token[c] for c in prompt]
+            st.session_state.context = st.session_state.context[-context_length:]
+            st.session_state.generated_text = []
+            st.session_state.text_at_step = []
+
+            figs = []
+            for _ in range(tokens_to_generate):
+                probs, next_token, fig = generate_text_step_by_step(
+                    st.session_state.model, st.session_state.context, sample_rng
+                )
+
+                st.session_state.context = st.session_state.context[1:] + [next_token]
+                st.session_state.generated_text.append(token_to_char[next_token])
+
+                st.session_state.text_at_step.append(
+                    "".join(st.session_state.generated_text)
+                )
+
+                figs.append(fig)
+
+            st.session_state.step_by_step_figs = figs
+
+        if "step_by_step_figs" in st.session_state:
+            tabs = st.tabs(
+                [f"Token {i}" for i in range(len(st.session_state.step_by_step_figs))]
+            )
+
+            for i, fig in enumerate(st.session_state.step_by_step_figs):
+                with tabs[i]:
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.write(
+                        f"Generated text so far: {st.session_state.text_at_step[i]}"
+                    )
