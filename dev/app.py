@@ -6,6 +6,7 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import umap
 
 from common import RNG
 
@@ -82,6 +83,31 @@ class MLP(nn.Module):
             nn.Linear(hidden_size, vocab_size),
         )
         self.reinit(rng)
+
+        # Initialize dictionaries to store inputs and outputs of activation layers
+        self.activation_inputs = {}
+        self.activation_outputs = {}
+        self.embedding_output = None
+
+        # Register hooks for all activation layers
+        self.register_hooks()
+
+    def register_hooks(self):
+        for i, layer in enumerate(self.mlp):
+            if isinstance(layer, (nn.Tanh, nn.ReLU, nn.Sigmoid)):
+                layer.register_forward_hook(self.save_activation_io(i))
+
+        self.wte.register_forward_hook(self.save_embedding_output)
+
+    def save_embedding_output(self, module, input, output):
+        self.embedding_output = output
+
+    def save_activation_io(self, layer_index):
+        def hook(module, input, output):
+            self.activation_inputs[layer_index] = input
+            self.activation_outputs[layer_index] = output
+
+        return hook
 
     @torch.no_grad()
     def reinit(self, rng):
@@ -239,7 +265,88 @@ def visualize_logits(input_tokens, target_tokens, model):
             yaxis_title="Probability",
         )
         figs.append(fig)
-    return figs
+    return logits, figs
+
+
+def visualize_embeddings(model):
+    # Extract the embedding matrix
+    embedding_matrix = model.wte.weight.cpu().detach().numpy()
+
+    # Use UMAP to reduce the dimensionality of the embeddings
+    reducer = umap.UMAP(n_neighbors=10, n_components=2, min_dist=0.1, metric="cosine")
+    embedding_2d = reducer.fit_transform(embedding_matrix)
+
+    # Extract x and y coordinates for all characters
+    x_coords = embedding_2d[:, 0]
+    y_coords = embedding_2d[:, 1]
+    texts = [char for char in token_to_char.values()]
+    is_vowel = [char in "aeiou" for char in token_to_char.values()]
+
+    fig = go.Figure()
+
+    # Add all points as a single trace
+    fig.add_trace(
+        go.Scatter(
+            x=x_coords,
+            y=y_coords,
+            mode="markers+text",
+            marker=dict(
+                size=12,
+                color=["red" if is_vowel[i] else "blue" for i in range(len(is_vowel))],
+                opacity=0.7,
+            ),
+            text=texts,
+            textposition="top center",
+            hoverinfo="text",
+            name="Embeddings",
+        )
+    )
+
+    fig.update_layout(
+        title=f"Embedding Visualization using UMAP | Step: {st.session_state.step_count}",
+        xaxis_title="UMAP Dimension 1",
+        yaxis_title="UMAP Dimension 2",
+        showlegend=False,
+        template="plotly_white",
+    )
+
+    return fig
+
+
+def visualize_activation_fn(model):
+    tanh_input = model.activation_inputs[1][0]
+    tanh_output = model.activation_outputs[1]
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Histogram(
+            x=tanh_input.view(-1).tolist(),
+            histnorm="probability",
+            name="Input",
+            opacity=0.5,
+            marker=dict(color="blue"),
+        )
+    )
+
+    fig.add_trace(
+        go.Histogram(
+            x=tanh_output.view(-1).tolist(),
+            histnorm="probability",
+            name="Output",
+            opacity=0.5,
+            marker=dict(color="red"),
+        )
+    )
+
+    fig.update_layout(
+        title=f"Tanh Activation | Saturation: {(abs(tanh_output)>0.99).float().mean():.2%} | Step: {st.session_state.step_count}",
+        xaxis_title="Activation Value",
+        yaxis_title="Probability",
+        barmode="overlay",
+    )
+
+    return fig
 
 
 def visualize_loss(loss_history):
@@ -434,7 +541,7 @@ with st.expander("Visualize batch of data"):
     st.write(
         "The following plots show the predicted probabilities for the next token in each of the first 8 samples. Note how the predictions change as the model is trained."
     )
-    figs = visualize_logits(
+    logits, figs = visualize_logits(
         first_idx.to(device), first_targets.to(device), st.session_state.model
     )
 
@@ -442,6 +549,27 @@ with st.expander("Visualize batch of data"):
     for i, fig in enumerate(figs):
         with tabs[i]:
             st.plotly_chart(fig, use_container_width=True)
+
+with st.expander("Visualizing model internals"):
+    actv, embd = st.columns(2)
+
+    with actv:
+        st.write("### Activation Function Distribution")
+        st.write(
+            "The following plot shows the distribution of the input and output values of the `tanh` activation function in the model. The saturation percentage is calculated as the `proportion of absolute values that are greater than 0.99`."
+        )
+        activation_fig = visualize_activation_fn(st.session_state.model)
+        st.plotly_chart(activation_fig, use_container_width=True)
+
+    with embd:
+        st.write("### Embedding Visualization")
+        st.write(
+            "The following plot shows the 2D visualization of the embeddings for each character in the vocabulary."
+        )
+
+        embedding_fig = visualize_embeddings(st.session_state.model)
+        st.plotly_chart(embedding_fig, use_container_width=True)
+
 
 with st.expander(
     f"Loss history | Total steps taken: {st.session_state.step_count} / {TOTAL_STEPS}"
