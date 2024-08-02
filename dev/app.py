@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import umap
+from torchviz import make_dot
 
 from common import RNG
 
@@ -303,7 +304,7 @@ def visualize_embeddings(model):
     )
 
     fig.update_layout(
-        title=f"Embedding Visualization using UMAP | Step: {st.session_state.step_count}",
+        title=f"Embedding Visualization using UMAP | Step: {st.session_state.step_count}<br>n_components: 2 | n_neighbors: 10 | min_dist: 0.1",
         xaxis_title="UMAP Dimension 1",
         yaxis_title="UMAP Dimension 2",
         showlegend=False,
@@ -479,38 +480,43 @@ col1, col2 = st.columns(2)
 
 with col1:
     if st.button("Train Model", type="primary"):
-        with st.status(f"Training | Step: {st.session_state.step_count}") as status:
-            for _ in range(training_steps):
-                idx, targets = next(st.session_state.train_data_iter)
-                idx, targets = idx.to(device), targets.to(device)
-                _, loss, lr = train_step(
-                    st.session_state.model, idx, targets, st.session_state.optimizer
-                )
-
-                if (
-                    st.session_state.step_count % 200 == 0
-                    or st.session_state.step_count == TOTAL_STEPS - 1
-                ):
-                    train_loss = eval_split(
-                        st.session_state.model, train_tokens, max_batches=20
-                    )
-                    val_loss = eval_split(st.session_state.model, val_tokens)
-
-                    st.session_state.loss_history.append(
-                        (st.session_state.step_count, train_loss, val_loss)
+        if st.session_state.step_count >= TOTAL_STEPS:
+            st.error(
+                f"Training has reached the maximum number of steps: {TOTAL_STEPS}. Reset the model to train again."
+            )
+        else:
+            with st.status(f"Training | Step: {st.session_state.step_count}") as status:
+                for _ in range(training_steps):
+                    idx, targets = next(st.session_state.train_data_iter)
+                    idx, targets = idx.to(device), targets.to(device)
+                    _, loss, lr = train_step(
+                        st.session_state.model, idx, targets, st.session_state.optimizer
                     )
 
-                    st.write(
-                        f"Step: {st.session_state.step_count} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | LR: {lr:.6e}"
+                    if (
+                        st.session_state.step_count % 200 == 0
+                        or st.session_state.step_count == TOTAL_STEPS - 1
+                    ):
+                        train_loss = eval_split(
+                            st.session_state.model, train_tokens, max_batches=20
+                        )
+                        val_loss = eval_split(st.session_state.model, val_tokens)
+
+                        st.session_state.loss_history.append(
+                            (st.session_state.step_count, train_loss, val_loss)
+                        )
+
+                        st.write(
+                            f"Step: {st.session_state.step_count} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | LR: {lr:.6e}"
+                        )
+
+                    status.update(
+                        label=f"Training | Step: {st.session_state.step_count}",
+                        state="running",
                     )
+                    st.session_state.step_count += 1
 
-                status.update(
-                    label=f"Training | Step: {st.session_state.step_count}",
-                    state="running",
-                )
-                st.session_state.step_count += 1
-
-            status.update(state="complete")
+                status.update(state="complete")
 
 with col2:
     if st.button("Reset Model"):
@@ -541,7 +547,7 @@ with st.expander("Visualize batch of data"):
     st.write(
         "The following plots show the predicted probabilities for the next token in each of the first 8 samples. Note how the predictions change as the model is trained."
     )
-    logits, figs = visualize_logits(
+    first_logits, figs = visualize_logits(
         first_idx.to(device), first_targets.to(device), st.session_state.model
     )
 
@@ -549,6 +555,18 @@ with st.expander("Visualize batch of data"):
     for i, fig in enumerate(figs):
         with tabs[i]:
             st.plotly_chart(fig, use_container_width=True)
+
+    st.write("### Model Graph")
+    st.write(
+        "The following graph shows the computation graph for the above examples. Under the hood, it uses the [`pytorchviz`](https://github.com/szagoruyko/pytorchviz) library to visualize the model."
+    )
+
+    model_graph = make_dot(
+        first_logits,
+        params=dict(st.session_state.model.named_parameters()),
+    )
+
+    st.graphviz_chart(model_graph, use_container_width=True)
 
 with st.expander("Visualizing model internals"):
     actv, embd = st.columns(2)
