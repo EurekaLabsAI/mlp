@@ -190,16 +190,16 @@ val_tokens = [char_to_token[c] for c in open('data/val.txt', 'r').read()]
 train_tokens = [char_to_token[c] for c in open('data/train.txt', 'r').read()]
 
 # create the model
-context_length = 3 # if 3 tokens predict the 4th, this is a 4-gram model
-embedding_size = 48
-hidden_size = 512
+context_length = 4 # if 3 tokens predict the 4th, this is a 4-gram model
+embedding_size = 64
+hidden_size = 1024
 init_rng = RNG(1337)
 # these two classes both produce the exact same results. One uses nn.Module the other doesn't.
 model = MLPRaw(vocab_size, context_length, embedding_size, hidden_size, init_rng)
 # model = MLP(vocab_size, context_length, embedding_size, hidden_size, init_rng)
 
 # create the optimizer
-learning_rate = 7e-4
+learning_rate = 0.01
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
 # training loop
