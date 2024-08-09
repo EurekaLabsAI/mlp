@@ -71,10 +71,13 @@ class MLP:
             # cross-entropy loss, equivalent to F.cross_entropy in PyTorch
             logits_max = np.max(logits, axis=1, keepdims=True)
             exp_logits = np.exp(logits - logits_max)
-            probs = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
-            probs_targets = probs[np.arange(len(targets)), targets]
-            nlls = -np.log(probs_targets)
+            log_sum_exp = np.log(np.sum(exp_logits, axis=1, keepdims=True))
+            log_probs = logits - logits_max - log_sum_exp
+            nlls = -log_probs[np.arange(len(targets)), targets]
             loss = np.mean(nlls)
+
+            # probabilities
+            probs = np.exp(log_probs)
             self.cache['probs'] = probs
 
         return logits, loss
